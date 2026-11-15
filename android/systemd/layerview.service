@@ -1,0 +1,10 @@
+[Unit]
+Description=layerview live keyboard layer display (localhost:8740)
+
+[Service]
+ExecStart=%h/.cargo/bin/layerview
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

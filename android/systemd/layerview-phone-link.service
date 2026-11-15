@@ -1,0 +1,11 @@
+[Unit]
+Description=Forward layerview to a USB-tethered Android kiosk (adb reverse)
+After=layerview.service
+
+[Service]
+ExecStart=%h/.local/bin/layerview-phone-link
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

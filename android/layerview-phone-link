@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Keeps the phone's localhost:PORT forwarded to this computer's layerview over
+# USB (adb reverse) for every connected device that has the kiosk app, and
+# (re)opens the kiosk when the link is (re)established. Run as a user service.
+set -u
+PORT="${LAYERVIEW_PORT:-8740}"
+PKG="io.github.ryanhecht.layerview.kiosk"
+while true; do
+  for serial in $(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}'); do
+    if ! adb -s "$serial" reverse --list 2>/dev/null | grep -q "tcp:$PORT tcp:$PORT"; then
+      adb -s "$serial" shell pm path "$PKG" >/dev/null 2>&1 || continue
+      if adb -s "$serial" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1; then
+        echo "linked $serial -> localhost:$PORT"
+        adb -s "$serial" shell am start -n "$PKG/.MainActivity" >/dev/null 2>&1
+      fi
+    fi
+  done
+  sleep 3
+done
