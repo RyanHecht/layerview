@@ -1,0 +1,10 @@
+[package]
+name = "layerview-format"
+description = "File formats shared by layerview and zmk-uf2-flash: the display file and the flash manifest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

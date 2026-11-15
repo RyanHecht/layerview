@@ -1,0 +1,11 @@
+[package]
+name = "layerview"
+description = "Live layer/keymap display for ZMK keyboards running the KeyPeek layer notifier, served to any browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+layerview-format.workspace = true
+serde_json.workspace = true
+hidapi = "2.6"

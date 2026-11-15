@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Layerview</title>
+<style>
+/* Layout: full-bleed black (OLED) stage; layer banner on top, board scaled to fit. Single dark theme on purpose. */
+:root{
+  --bg:#000; --cap:#16151d; --cap-edge:#2a2836; --fg:#e9e6f2; --muted:#8a859c; --faint:#4a4658;
+  --press:#ffffff; --l0:#8a859c;
+  --font:Roboto, "Google Sans", system-ui, sans-serif; --mono:"Roboto Mono", ui-monospace, monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);overflow:hidden;-webkit-user-select:none;user-select:none}
+#shift{position:fixed;inset:0;display:flex;flex-direction:column;padding:max(10px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));gap:8px;transition:opacity .6s,transform 2s}
+header{display:flex;align-items:center;gap:14px;min-height:44px}
+#layerName{font:700 30px/1 var(--font);letter-spacing:.04em;text-transform:uppercase}
+#chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:5px 8px;border-radius:5px;border:1px solid var(--cap-edge);color:var(--muted)}
+.chip.on{color:#000}
+#status{margin-left:auto;font:500 13px var(--mono);color:var(--muted);text-align:right}
+#status.warn{color:#ffb547}
+#board{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+svg{width:100%;height:100%}
+.k rect{fill:var(--cap);stroke:var(--cap-edge);stroke-width:.03}
+.k text{font-family:var(--font);text-anchor:middle;dominant-baseline:central;fill:var(--fg);font-weight:600}
+.k .meta{fill:var(--muted);font-weight:500}
+.k.tinted text{fill:#0b0a10}
+.k.tinted .meta{fill:#0b0a10;opacity:.7}
+.k.trans text{fill:var(--faint)}
+.k.pressed rect{fill:var(--press)!important;stroke:var(--press)!important}
+.k.pressed text{fill:#000!important}
+#empty{color:var(--muted);font:500 18px var(--font);text-align:center;max-width:36ch;line-height:1.5}
+body.idle #shift{opacity:.35}
+body.sleep #shift{opacity:.05}
+</style>
+</head>
+<body>
+<div id="shift">
+  <header>
+    <div id="layerName">—</div>
+    <div id="chips"></div>
+    <div id="status">Connecting…</div>
+  </header>
+  <div id="board"><div id="empty">Waiting for the bridge on this computer…</div></div>
+</div>
+<script>
+"use strict";
+// Layer colors: index 0 stays neutral; others cycle through distinct hues.
+var HUES = ["#8a859c","#6cb8ff","#ffb547","#57d6b0","#ff8a6b","#c792ff","#ffd84d","#5ee0e6","#ff6fae"];
+function layerColor(i){ return HUES[i % HUES.length]; }
+
+var layout = null, state = null, nodes = [];
+var board = document.getElementById("board");
+
+function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+function topLayer(bits){ var t = 0; for (var i = 0; i < 32; i++) if (bits >>> i & 1) t = i; return t; }
+
+function buildBoard(){
+  var ks = layout.keys; if (!ks.length) return;
+  var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  ks.forEach(function(k){
+    // generous bounds so rotated keys never clip
+    var pad = Math.max(k.w, k.h) * 0.25;
+    minX = Math.min(minX, k.x - pad); minY = Math.min(minY, k.y - pad);
+    maxX = Math.max(maxX, k.x + k.w + pad); maxY = Math.max(maxY, k.y + k.h + pad);
+  });
+  var s = '<svg viewBox="' + minX + ' ' + minY + ' ' + (maxX - minX) + ' ' + (maxY - minY) + '" preserveAspectRatio="xMidYMid meet">';
+  ks.forEach(function(k, i){
+    var cx = k.x + k.w / 2, cy = k.y + k.h / 2, g = 0.06;
+    s += '<g class="k" data-i="' + i + '" transform="translate(' + cx + ' ' + cy + ') rotate(' + (k.r || 0) + ')">'
+      + '<rect x="' + (-k.w / 2 + g) + '" y="' + (-k.h / 2 + g) + '" width="' + (k.w - 2 * g) + '" height="' + (k.h - 2 * g) + '" rx="0.12"/>'
+      + '<text class="main" y="0"></text><text class="meta top" y="' + (-k.h / 2 + 0.2) + '" font-size="0.17"></text>'
+      + '<text class="meta bot" y="' + (k.h / 2 - 0.2) + '" font-size="0.17"></text></g>';
+  });
+  board.innerHTML = s + '</svg>';
+  nodes = Array.prototype.slice.call(board.querySelectorAll(".k")).map(function(g){
+    return { g: g, rect: g.querySelector("rect"), main: g.querySelector(".main"), top: g.querySelector(".top"), bot: g.querySelector(".bot") };
+  });
+}
+
+function render(){
+  if (!layout || !state || !nodes.length) return;
+  var top = topLayer(state.layers);
+  var name = layout.layers[top] || ("Layer " + top);
+  var el = document.getElementById("layerName");
+  el.textContent = name; el.style.color = layerColor(top);
+  var chips = "";
+  layout.layers.forEach(function(n, i){
+    var on = state.layers >>> i & 1;
+    chips += '<span class="chip' + (on ? ' on' : '') + '"' + (on ? ' style="background:' + layerColor(i) + ';border-color:' + layerColor(i) + '"' : '') + '>' + esc(n || i) + '</span>';
+  });
+  document.getElementById("chips").innerHTML = chips;
+  var pressed = {}; state.pressed.forEach(function(i){ pressed[i] = 1; });
+  layout.keys.forEach(function(k, i){
+    var n = nodes[i]; if (!n) return;
+    var eff = state.effective[i] || 0;
+    var lk = k.legends[eff] || k.legends[0] || null;
+    var main = "", topT = "", botT = "";
+    if (lk) {
+      main = state.shift && lk.s ? lk.s : (lk.t || "");
+      topT = !state.shift && lk.s ? lk.s : "";
+      botT = lk.h || "";
+    }
+    if (main === "▽") main = "";
+    var len = main.length;
+    n.main.setAttribute("font-size", len > 6 ? 0.2 : len > 4 ? 0.24 : len > 2 ? 0.3 : 0.4);
+    n.main.textContent = main; n.top.textContent = topT; n.bot.textContent = botT;
+    var tinted = eff > 0;
+    n.g.classList.toggle("tinted", tinted);
+    n.g.classList.toggle("pressed", !!pressed[i]);
+    n.rect.style.fill = tinted ? layerColor(eff) : "";
+    n.rect.style.stroke = tinted ? layerColor(eff) : "";
+  });
+}
+
+function setStatus(st){
+  var el = document.getElementById("status");
+  el.textContent = st.message;
+  el.className = st.kind === "live" ? "" : "warn";
+  if (st.kind !== "connected" && !layout) document.getElementById("board").innerHTML = '<div id="empty">' + esc(st.message) + '</div>';
+}
+
+// --- idle dimming + pixel shift (OLED burn-in care) ---
+var lastActivity = Date.now();
+function activity(){ lastActivity = Date.now(); document.body.classList.remove("idle", "sleep"); }
+setInterval(function(){
+  var idle = Date.now() - lastActivity;
+  document.body.classList.toggle("idle", idle > 45000 && idle <= 600000);
+  document.body.classList.toggle("sleep", idle > 600000);
+}, 2000);
+setInterval(function(){
+  var dx = Math.round(Math.random() * 6 - 3), dy = Math.round(Math.random() * 6 - 3);
+  document.getElementById("shift").style.transform = "translate(" + dx + "px," + dy + "px)";
+}, 180000);
+
+// --- live stream ---
+var es = new EventSource("events");
+es.addEventListener("status", function(e){ setStatus(JSON.parse(e.data)); });
+es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); buildBoard(); render(); });
+es.addEventListener("state", function(e){
+  var prev = state; state = JSON.parse(e.data);
+  if (!prev || prev.layers !== state.layers || state.pressed.length) activity();
+  render();
+});
+es.onerror = function(){ setStatus({ kind: "error", message: "Bridge not reachable, retrying…" }); };
+</script>
+</body>
+</html>

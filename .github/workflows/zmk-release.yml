@@ -1,0 +1,92 @@
+# Reusable workflow for ZMK config repos:
+#   1. builds firmware with ZMK's standard build-user-config workflow,
+#   2. exports a layerview display file from your keymap (keymap-drawer),
+#   3. publishes a GitHub Release with the UF2s + flash.json for zmk-uf2-flash.
+#
+# Caller example (in your zmk-config repo, .github/workflows/build.yml):
+#
+#   on: [push, workflow_dispatch]
+#   jobs:
+#     release:
+#       uses: RyanHecht/layerview/.github/workflows/zmk-release.yml@main
+#       permissions: { contents: write }
+#       with:
+#         keymap: config/glove80.keymap
+#         zmk_keyboard: glove80
+#         targets: '[{"name":"left","file_glob":"*glove80_lh*.uf2","volume_label":"GLV80LHBOOT","central":true}]'
+name: ZMK build + release
+
+on:
+  workflow_call:
+    inputs:
+      keymap:
+        description: Path to your .keymap (used for the display file)
+        type: string
+        required: true
+      zmk_keyboard:
+        description: keymap-drawer physical layout name (e.g. glove80, corne). Empty = no display file.
+        type: string
+        default: ""
+      keyboard_name:
+        description: Display name for the keyboard
+        type: string
+        default: ""
+      targets:
+        description: 'JSON list: [{"name","file_glob","volume_label","hint","central"}]'
+        type: string
+        required: true
+      layerview_ref:
+        description: Ref of RyanHecht/layerview to take the export tools from
+        type: string
+        default: main
+
+jobs:
+  build:
+    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3
+
+  release:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: RyanHecht/layerview
+          ref: ${{ inputs.layerview_ref }}
+          path: .layerview
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: firmware
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Export layerview display file
+        if: inputs.zmk_keyboard != ''
+        run: |
+          pip install ./.layerview/export
+          mkdir -p release
+          layerview-export "${{ inputs.keymap }}" release/layerview.json \
+            --zmk-keyboard "${{ inputs.zmk_keyboard }}" \
+            --name "${{ inputs.keyboard_name || inputs.zmk_keyboard }}" \
+            --commit "$GITHUB_SHA"
+      - name: Assemble flash manifest
+        env:
+          TARGETS: ${{ inputs.targets }}
+          DISPLAY_FILE: ${{ inputs.zmk_keyboard != '' && 'layerview.json' || '' }}
+        run: |
+          python .layerview/export/make_manifest.py firmware release \
+            --targets "$TARGETS" --display "$DISPLAY_FILE" \
+            --keyboard "${{ inputs.keyboard_name || inputs.zmk_keyboard }}" \
+            --commit "$GITHUB_SHA" --message "$(git log -1 --format=%s)"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" release/* \
+            --target "$GITHUB_SHA" \
+            --title "Build ${{ github.run_number }}: $(git log -1 --format=%s)" \
+            --notes "Flash with: zmk-uf2-flash --repo ${{ github.repository }}"

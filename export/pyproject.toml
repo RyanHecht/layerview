@@ -1,0 +1,17 @@
+[project]
+name = "layerview-export"
+version = "0.1.0"
+description = "Export a ZMK keymap (via keymap-drawer) as a layerview display file: physical layout + per-layer legends"
+requires-python = ">=3.10"
+dependencies = ["keymap-drawer>=0.23"]
+license = "MIT"
+
+[project.scripts]
+layerview-export = "layerview_export:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["layerview_export"]
