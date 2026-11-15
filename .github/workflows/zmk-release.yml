@@ -35,6 +35,10 @@ on:
         description: 'JSON list: [{"name","file_glob","volume_label","hint","central"}]'
         type: string
         required: true
+      export_args:
+        description: 'Extra layerview-export arguments, e.g. --label "&kp LG(LA(SPACE))=Dictate"'
+        type: string
+        default: ""
       layerview_ref:
         description: Ref of RyanHecht/layerview to take the export tools from
         type: string
@@ -73,7 +77,7 @@ jobs:
           layerview-export "${{ inputs.keymap }}" release/layerview.json \
             --zmk-keyboard "${{ inputs.zmk_keyboard }}" \
             --name "${{ inputs.keyboard_name || inputs.zmk_keyboard }}" \
-            --commit "$GITHUB_SHA"
+            --commit "$GITHUB_SHA" ${{ inputs.export_args }}
       - name: Assemble flash manifest
         env:
           TARGETS: ${{ inputs.targets }}

@@ -35,10 +35,49 @@ SHIFT_LEGENDS = {"Shift"}
 SHIFTED = dict(zip(r"`1234567890-=[]\;',./", "~!@#$%^&*()_+{}|:\"<>?"))
 
 
+KEYCODE_CHARS = {
+    "EQUAL": "=", "MINUS": "-", "BSLH": "\\", "SEMI": ";", "SQT": "'", "GRAVE": "`", "COMMA": ",",
+    "DOT": ".", "FSLH": "/", "LBKT": "[", "RBKT": "]",
+}
+ARROWS = {"UP": "↑", "DOWN": "↓", "LEFT": "←", "RIGHT": "→"}
+MOUSE_BUTTONS = {"LCLK": "L click", "RCLK": "R click", "MCLK": "M click", "MB4": "Back", "MB5": "Fwd"}
+
+
+def pretty_behavior(s: str) -> str | None:
+    """Readable labels for raw behavior bindings keymap-drawer passes through
+    (`&name ARGS`), e.g. pointing keys and TailorKey/Glorious Engrammer macros."""
+    m = re.fullmatch(r"&(\S+)\s*(.*)", s)
+    if not m:
+        return None
+    name, arg = m.group(1), m.group(2).strip()
+    if name == "mkp":
+        return MOUSE_BUTTONS.get(arg, arg)
+    if name == "mmv":
+        return "Mouse " + ARROWS.get(arg.removeprefix("MOVE_"), arg)
+    if name == "msc":
+        return "Scroll " + ARROWS.get(arg.removeprefix("SCRL_"), arg)
+    if m2 := re.fullmatch(r"bt_(\d)", name):
+        return f"BT {m2.group(1)}"
+    base = re.sub(r"_v\d+[A-Z]?(_[A-Z]+)?$", "", name)          # drop version/author suffixes
+    if base == "AS" and arg:                                        # autoshift key: show the key
+        if m3 := re.fullmatch(r"N(\d)", arg):
+            return m3.group(1)
+        return KEYCODE_CHARS.get(arg, arg)
+    if base.startswith("cur_"):
+        verb, _, what = base[4:].partition("_")
+        return f"{'Sel' if verb == 'SELECT' else verb.title()[:3]} {what.lower()}".strip()
+    if base == "symb_dotdot":
+        return "../"
+    words = base.replace("_", " ").strip()
+    return (words[:1].upper() + words[1:])[:12] if words else None
+
+
 def pretty(s: str) -> str:
     s = s.strip()
     if s in PRETTY:
         return PRETTY[s]
+    if s.startswith("&") and len(s) > 1 and (b := pretty_behavior(s)) is not None:
+        return b
     if m := re.fullmatch(r"KP (\d)", s):
         return m.group(1)
     if m := re.fullmatch(r"Sft\+(.)", s):
@@ -69,9 +108,16 @@ def main() -> int:
     ap.add_argument("--zmk-keyboard", default="glove80")
     ap.add_argument("--name", default="Glove80")
     ap.add_argument("--commit", default="")
+    ap.add_argument("--label", action="append", default=[], metavar="BINDING=LABEL",
+                    help='name a raw binding, e.g. --label "&kp LG(LA(SPACE))=Dictate" (repeatable)')
     a = ap.parse_args()
 
     cfg = Config()
+    for item in a.label:
+        binding, sep, label = item.partition("=")
+        if not sep:
+            ap.error(f"--label needs BINDING=LABEL, got {item!r}")
+        cfg.parse_config.raw_binding_map[binding.strip()] = label.strip()
     with open(a.keymap, encoding="utf-8") as f:
         parsed = ZmkKeymapParser(cfg.parse_config, 0).parse(f)
     layer_names = list(parsed["layers"].keys())
