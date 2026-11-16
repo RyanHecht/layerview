@@ -2,9 +2,57 @@
 # Keeps the phone's localhost:PORT forwarded to this computer's layerview over
 # USB (adb reverse) for every connected device that has the kiosk app, and
 # (re)opens the kiosk when the link is (re)established. Run as a user service.
+#
+# Battery watch: every minute, checks the phone's battery temperature and
+# health. Problems are written to the layerview alerts file (shown on the
+# display) and sent as a desktop notification; an hourly line goes to
+# phone-battery.log for long-term trends.
 set -u
 PORT="${LAYERVIEW_PORT:-8740}"
 PKG="io.github.ryanhecht.layerview.kiosk"
+MAX_TENTHS="${LAYERVIEW_BATTERY_MAX_TENTHS:-400}"           # 40.0 °C
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/layerview"
+ALERTS="$STATE/alerts.json"
+LOG="$STATE/phone-battery.log"
+mkdir -p "$STATE"
+
+field() { awk -v k="$1" '$1 == k":" {print $2; exit}' <<<"$2"; }
+
+check_battery() {
+  local serial="$1" out t h lvl cycles msg=""
+  out=$(adb -s "$serial" shell dumpsys battery 2>/dev/null) || return
+  t=$(field temperature "$out"); h=$(field health "$out"); lvl=$(field level "$out")
+  [[ "$t" =~ ^[0-9]+$ ]] || return
+  if (( t >= MAX_TENTHS )); then
+    msg="Phone battery is hot: $(awk "BEGIN{printf \"%.1f\", $t/10}") °C. Check its airflow."
+  fi
+  case "$h" in
+    2|"") ;;
+    3) msg="Phone battery is overheating (health: overheat). Unplug it." ;;
+    4) msg="Phone battery reports dead. Replace it or retire the phone." ;;
+    5) msg="Phone battery over-voltage reported. Unplug it." ;;
+    6) msg="Phone battery failure reported. Unplug it." ;;
+    7) msg="Phone battery is too cold." ;;
+    *) msg="Phone battery health code $h. Check it." ;;
+  esac
+  local hour; hour=$(date +%Y-%m-%dT%H)
+  if ! grep -q "^$hour" "$LOG" 2>/dev/null; then
+    cycles=$(adb -s "$serial" shell cat /sys/class/power_supply/battery/cycle_count 2>/dev/null | tr -d '\r')
+    echo "$(date +%Y-%m-%dT%H:%M) temp=$(awk "BEGIN{printf \"%.1f\", $t/10}")C level=$lvl health=$h cycles=${cycles:-?}" >> "$LOG"
+  fi
+  local current=""; [ -f "$ALERTS" ] && current=$(cat "$ALERTS")
+  if [ -n "$msg" ]; then
+    if [[ "$current" != *"$msg"* ]]; then
+      printf '{"message": "%s", "since": %s}\n' "$msg" "$(date +%s)" > "$ALERTS"
+      command -v notify-send >/dev/null && notify-send -u critical "layerview phone" "$msg"
+      echo "alert: $msg"
+    fi
+  elif [ -n "$current" ]; then
+    rm -f "$ALERTS"; echo "battery OK again"
+  fi
+}
+
+tick=0
 while true; do
   for serial in $(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}'); do
     if ! adb -s "$serial" reverse --list 2>/dev/null | grep -q "tcp:$PORT tcp:$PORT"; then
@@ -14,6 +62,8 @@ while true; do
         adb -s "$serial" shell am start -n "$PKG/.MainActivity" >/dev/null 2>&1
       fi
     fi
+    (( tick % 20 == 0 )) && adb -s "$serial" shell pm path "$PKG" >/dev/null 2>&1 && check_battery "$serial"
   done
+  tick=$((tick + 1))
   sleep 3
 done

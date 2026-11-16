@@ -106,6 +106,12 @@ pub fn default_display_path() -> PathBuf {
     state_dir().join("layerview").join("display.json")
 }
 
+/// Optional alert shown on the display (e.g. by the phone battery watch):
+/// `{"message": "..."}`; no file = no alert.
+pub fn default_alerts_path() -> PathBuf {
+    state_dir().join("layerview").join("alerts.json")
+}
+
 pub fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)

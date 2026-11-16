@@ -13,7 +13,11 @@ screen. No Wi-Fi: the phone reaches the computer's `localhost:8740` through
   can remove it.
 - `setup-phone.sh`: one-time phone setup over adb.
 - `layerview-phone-link`: keeps `adb reverse` in place whenever the phone
-  (re)connects. Run it as a user service.
+  (re)connects, and watches the phone's battery: every minute it checks
+  temperature (alert above 40 °C, `LAYERVIEW_BATTERY_MAX_TENTHS`) and health,
+  shows problems on the display and as a desktop notification, and logs an
+  hourly line to `~/.local/state/layerview/phone-battery.log`. Run it as a
+  user service.
 - `systemd/`: user units for `layerview` and the phone link.
 
 ## Setup

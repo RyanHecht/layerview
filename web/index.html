@@ -53,7 +53,7 @@ function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {"&":"&
 function pretty(name){ return String(name || "").replace(/_/g, " "); }
 function topLayer(bits){ var t = 0; for (var i = 0; i < 32; i++) if (bits >>> i & 1) t = i; return t; }
 
-var layout = null, state = null, status = { kind: "searching", message: "Connecting…" };
+var layout = null, state = null, status = { kind: "searching", message: "Connecting…" }, alertMsg = null;
 var nodes = [], hud = null, layerIndex = {}, howTo = {}, bounds = null, posIdx = {}, legendRows = [];
 
 // Which layer (if any) a legend switches to, and how.
@@ -109,7 +109,7 @@ function build(){
   computeHowTo();
   var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
   layout.keys.forEach(function(k){
-    var p = Math.max(k.w, k.h) * 0.22;
+    var p = Math.max(k.w, k.h) * 0.32;   // room for rotation + the anti-burn-in pixel shift
     minX = Math.min(minX, k.x - p); minY = Math.min(minY, k.y - p);
     maxX = Math.max(maxX, k.x + k.w + p); maxY = Math.max(maxY, k.y + k.h + p);
   });
@@ -222,7 +222,9 @@ function render(){
     g.style.opacity = on ? 1 : (top ? 0.45 : 0.85);
     ln.style.fontWeight = on ? 800 : 600;
   });
-  hud.status.textContent = status.kind === "live" ? "" : status.message;
+  hud.status.textContent = alertMsg || (status.kind === "live" ? "" : status.message);
+  hud.status.style.fill = alertMsg ? "#ff5a4f" : "";
+  hud.status.setAttribute("font-size", hud.status.textContent.length > 40 ? 0.19 : 0.26);
 }
 
 function setStatus(s){
@@ -253,6 +255,7 @@ es.addEventListener("hello", function(e){
   pageId = id;
 });
 es.addEventListener("status", function(e){ setStatus(JSON.parse(e.data)); });
+es.addEventListener("alert", function(e){ alertMsg = JSON.parse(e.data).message; if (alertMsg) activity(); render(); });
 es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); build(); });
 es.addEventListener("state", function(e){
   var prev = state; state = JSON.parse(e.data);

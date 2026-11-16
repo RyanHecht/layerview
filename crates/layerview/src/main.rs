@@ -11,7 +11,7 @@
 //! Nothing about your typing is logged or stored. Binds 127.0.0.1 by default
 //! because the stream reveals every key you press.
 
-use layerview_format::{default_display_path, DisplayFile};
+use layerview_format::{default_alerts_path, default_display_path, DisplayFile};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -42,6 +42,7 @@ struct Hub {
     layout_json: Mutex<Option<Value>>,
     live: Mutex<Live>,
     last_state: Mutex<Option<Value>>,
+    alert: Mutex<Value>,
 }
 
 impl Hub {
@@ -142,6 +143,7 @@ impl Hub {
         if let Some(s) = self.last_state.lock().unwrap().as_ref() {
             let _ = tx.send(Self::sse("state", s));
         }
+        let _ = tx.send(Self::sse("alert", &self.alert.lock().unwrap()));
         self.clients.lock().unwrap().push(tx);
         rx
     }
@@ -210,6 +212,10 @@ fn main() {
         let path = args.display.clone();
         thread::spawn(move || watch_display(&hub, path));
     }
+    {
+        let hub = Arc::clone(&hub);
+        thread::spawn(move || watch_alerts(&hub, default_alerts_path()));
+    }
     live_loop(&hub, &args.device_filter.to_lowercase());
 }
 
@@ -231,6 +237,25 @@ fn watch_display(hub: &Hub, path: PathBuf) {
             }
         }
         thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// Shows `{"message": ...}` from the alerts file on every display; no file = no alert.
+fn watch_alerts(hub: &Hub, path: PathBuf) {
+    loop {
+        let v = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(|m| json!({ "message": m })))
+            .unwrap_or_else(|| json!({ "message": null }));
+        let mut cur = hub.alert.lock().unwrap();
+        if *cur != v {
+            eprintln!("[layerview] alert: {}", v["message"]);
+            *cur = v.clone();
+            drop(cur);
+            hub.broadcast("alert", &v);
+        }
+        thread::sleep(Duration::from_secs(3));
     }
 }
 
