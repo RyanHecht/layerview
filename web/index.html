@@ -59,7 +59,10 @@ var nodes = [], hud = null, layerIndex = {}, howTo = {}, bounds = null;
 // Which layer (if any) a legend switches to, and how.
 function activator(l){
   if (!l) return null;
-  if (l.h && layerIndex[l.h] !== undefined) return { layer: layerIndex[l.h], how: "hold", label: l.t || "" };
+  if (l.h && layerIndex[l.h] !== undefined) {
+    if (l.t === l.h) return { layer: layerIndex[l.h], how: "hold", label: "", pure: true };
+    return { layer: layerIndex[l.h], how: "hold", label: l.t || "" };
+  }
   if (l.t && layerIndex[l.t] !== undefined) return { layer: layerIndex[l.t], how: l.h === "toggle" ? "tap" : "hold", label: "" , pure: true };
   return null;
 }
