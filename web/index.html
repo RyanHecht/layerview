@@ -98,8 +98,9 @@ function activator(l){
 
 // Breadth-first from the base layer: describe how each layer is reached.
 // howTo[layer] = full wording ("hold Magic  →  tap 2"); howShort[layer] = keys only ("Magic › 2").
-var howShort = {}, howVerb = {};
+var howShort = {}, howVerb = {}, parentOf = {};
 function addRoute(m, target, verb, keys){
+  if (m) parentOf[target] = m;
   howVerb[target] = verb;   // last step: "hold" = momentary, "tap"/"press" = a mode you stay in
   var step = verb + " " + keys;
   howTo[target] = howTo[m] ? howTo[m] + "  →  " + step : step;
@@ -113,7 +114,7 @@ function sided(k, name){
   return same > 1 ? ((k.x + k.w / 2) < mid ? "left " : "right ") + name : name;
 }
 function computeHowTo(){
-  howTo = { 0: "" }; howShort = { 0: "" };
+  howTo = { 0: "" }; howShort = { 0: "" }; parentOf = {};
   var queue = [0];
   while (queue.length) {
     var m = queue.shift();
@@ -168,7 +169,10 @@ function build(){
     if (c < gx) leftEdge = Math.max(leftEdge, k.x + k.w); else rightEdge = Math.min(rightEdge, k.x);
   });
   var gapW = Math.max(3, rightEdge - leftEdge) - 0.3, colW = gapW / 2;
-  var entries = layout.layers.map(function(n, i){ return i; }).filter(function(i){ return i > 0; });
+  // Layers only reachable by holding a key inside another held layer (e.g. mouse speeds)
+  // are listed under their parent while it's active, not in the main list.
+  var nested = function(i){ return howVerb[i] === "hold" && parentOf[i] !== undefined; };
+  var entries = layout.layers.map(function(n, i){ return i; }).filter(function(i){ return i > 0 && !nested(i); });
   var perCol = Math.ceil(entries.length / 2), lh = Math.min(0.4, 2.3 / Math.max(perCol, 1));
   s += '<g id="hud"><text class="name" x="' + gx + '" y="' + (minY + 1.15) + '" font-size="0.6"></text>'
      + '<text class="how" x="' + gx + '" y="' + (minY + 1.8) + '" font-size="0.27"></text>';
@@ -257,7 +261,15 @@ function render(){
   hud.name.style.fill = wmOn ? WM : color(top);
   hud.name.setAttribute("font-size", wmOn || top ? 0.6 : 0.4);        // quiet on the base layer
   hud.name.style.opacity = wmOn || top ? 1 : 0.55;
-  hud.how.textContent = wmOn ? held.map(function(m){ return m[0].toUpperCase() + m.slice(1); }).join(" + ") + " held" : (top ? (howTo[top] || "") : "");
+  var kids = [];
+  layout.layers.forEach(function(n, i){
+    if (parentOf[i] === top && howVerb[i] === "hold") {
+      var key = (howShort[i] || "").split(" › ").pop(), parent = layout.layers[top];
+      kids.push(key + " " + (n.indexOf(parent) === 0 ? n.slice(parent.length) : pretty(n)).toLowerCase());
+    }
+  });
+  hud.how.textContent = wmOn ? held.map(function(m){ return m[0].toUpperCase() + m.slice(1); }).join(" + ") + " held"
+    : (top ? (howTo[top] || "") + (kids.length ? "   ·   " + kids.join(" · ") : "") : "");
   hud.rows.forEach(function(g, n){
     var r = legendRows[n], li = r.layer, on = (st.layers >>> li & 1) === 1;
     var name = pretty(layout.layers[li]), how = howShort[li] === undefined ? "not reachable" : howShort[li];

@@ -10,3 +10,5 @@ layerview-format.workspace = true
 serde_json.workspace = true
 hidapi = "2.6"
 regex = "1"
+serde.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

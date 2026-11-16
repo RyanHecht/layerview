@@ -27,6 +27,10 @@ The pieces only meet through two documented files ([docs/formats.md](docs/format
 
 If a niri config exists (`~/.config/niri/config.kdl`, or `--niri-config FILE`), `layerview` parses its binds (following `include`s, using `hotkey-overlay-title` when present) and reads the keyboard's own HID report for the exact modifiers held. While you hold modifiers that shortcuts use, the display switches to a **Window manager** view: each key shows the action it would trigger (Focus ←, Close, WS ↓, your titles...), and unbound keys dim. `--no-niri` turns it off.
 
+## Revealed preferences
+
+`layerview` also keeps **daily counts** (no keystroke order, no text) in `~/.local/state/layerview/usage.json`: presses per physical key, tap vs hold for dual-role keys, layer entries and time (and which key got you there), and which key produced each modifier (thumb Shift vs home-row Shift...). `tools/usage_report.py --days 7` summarizes it. Disable with `--no-usage`.
+
 ## Firmware requirements for the live display
 
 `layerview` reads reports that the KeyPeek layer notifier sends over Raw HID: active layers and key presses by position. It never sends anything to the keyboard, so it also works through KVMs that only pass keyboard-to-computer traffic. Add to your zmk-config:

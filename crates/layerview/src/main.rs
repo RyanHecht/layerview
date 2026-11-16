@@ -11,6 +11,8 @@
 //! Nothing about your typing is logged or stored. Binds 127.0.0.1 by default
 //! because the stream reveals every key you press.
 
+mod usage;
+
 use layerview_format::{default_alerts_path, default_display_path, DisplayFile};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -45,6 +47,8 @@ struct Hub {
     last_state: Mutex<Option<Value>>,
     alert: Mutex<Value>,
     shortcuts: Mutex<Value>,
+    usage: Mutex<usage::Tracker>,
+    track_usage: std::sync::atomic::AtomicBool,
 }
 
 impl Hub {
@@ -100,7 +104,21 @@ impl Hub {
     }
 
     fn update_live(&self, f: impl FnOnce(&mut Live)) {
-        f(&mut self.live.lock().unwrap());
+        let (old, new) = {
+            let mut live = self.live.lock().unwrap();
+            let old = live.clone();
+            f(&mut live);
+            (old, live.clone())
+        };
+        if self.track_usage.load(std::sync::atomic::Ordering::Relaxed) && new.connected {
+            if let Some(d) = self.display.lock().unwrap().as_ref() {
+                self.usage.lock().unwrap().observe(
+                    d,
+                    (old.layers, &old.pressed, old.mods),
+                    (new.layers, &new.pressed, new.mods),
+                );
+            }
+        }
         self.publish_state();
     }
 
@@ -165,11 +183,12 @@ struct Args {
     device_filter: String,
     display: PathBuf,
     niri: Option<PathBuf>,
+    usage: bool,
 }
 
 fn parse_args() -> Args {
     let default_niri = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/niri/config.kdl")).filter(|p| p.exists());
-    let mut args = Args { listen: "127.0.0.1:8740".into(), device_filter: String::new(), display: default_display_path(), niri: default_niri };
+    let mut args = Args { listen: "127.0.0.1:8740".into(), device_filter: String::new(), display: default_display_path(), niri: default_niri, usage: true };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -178,9 +197,10 @@ fn parse_args() -> Args {
             "--display" => args.display = PathBuf::from(it.next().expect("--display needs a file")),
             "--niri-config" => args.niri = Some(PathBuf::from(it.next().expect("--niri-config needs a file"))),
             "--no-niri" => args.niri = None,
+            "--no-usage" => args.usage = false,
             "-h" | "--help" => {
                 println!(
-                    "layerview [--listen 127.0.0.1:8740] [--device NAME] [--display FILE] [--niri-config FILE | --no-niri]\n\n\
+                    "layerview [--listen 127.0.0.1:8740] [--device NAME] [--display FILE] [--niri-config FILE | --no-niri] [--no-usage]\n\n\
                      Live layer/keymap display for a ZMK keyboard running the KeyPeek layer notifier.\n\
                      --display defaults to {} (registered by zmk-uf2-flash).\n\
                      Binds localhost by default: the stream reveals every key you press.",
@@ -200,7 +220,16 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
     let hub = Arc::new(Hub::default());
+    hub.track_usage.store(args.usage, std::sync::atomic::Ordering::Relaxed);
     hub.refresh_status();
+    if args.usage {
+        eprintln!("[layerview] counting key/layer/modifier usage (daily totals) in {}", usage::usage_path().display());
+        let hub = Arc::clone(&hub);
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(60));
+            hub.usage.lock().unwrap().save();
+        });
+    }
 
     let listener = TcpListener::bind(&args.listen).unwrap_or_else(|e| panic!("cannot bind {}: {e}", args.listen));
     eprintln!("[layerview] serving http://{}  (display file: {})", args.listen, args.display.display());
