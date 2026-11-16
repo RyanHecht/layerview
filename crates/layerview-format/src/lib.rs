@@ -15,6 +15,19 @@ pub struct DisplayFile {
     pub built_unix: u64,
     pub layers: Vec<String>,
     pub keys: Vec<DisplayKey>,
+    /// Key combos (several keys pressed together).
+    #[serde(default)]
+    pub combos: Vec<Combo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Combo {
+    /// ZMK key positions pressed together.
+    pub keys: Vec<usize>,
+    pub legend: Legend,
+    /// Layer indices where the combo is active.
+    #[serde(default)]
+    pub layers: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

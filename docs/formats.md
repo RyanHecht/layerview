@@ -21,6 +21,9 @@ Produced by `layerview-export`, read by `layerview`. Registered at
       "trans": [false, false, false],     // per layer: transparent (falls through)
       "shift": [false, false, false]      // per layer: binding is Shift
     }
+  ],
+  "combos": [                    // optional
+    { "keys": [51, 68], "legend": {"t": "Gaming", "h": "toggle"}, "layers": [0, 3] }
   ]
 }
 ```

@@ -29,7 +29,7 @@ PRETTY = {
     "KP DOT": ".", "KP ENTER": "Enter", "SCROLLLOCK": "ScrLk", "PAUSE BREAK": "Pause", "CAPS": "Caps",
     "K APP": "Menu", "BRI DN": "Bri−", "BRI UP": "Bri+", "PP": "Play", "PREV": "Prev", "NEXT": "Next",
     "MUTE": "Mute", "VOL DN": "Vol−", "VOL UP": "Vol+", "&lower": "Lower",
-    "&rgb_ug_status_macro": "Magic", "&bootloader": "Boot", "&sys_reset": "Reset",
+    "&rgb_ug_status_macro": "Magic", "Alt+Ctl+LSHFT": "Meh", "&caps_word": "Caps Word", "&bootloader": "Boot", "&sys_reset": "Reset",
 }
 SHIFT_LEGENDS = {"Shift"}
 SHIFTED = dict(zip(r"`1234567890-=[]\;',./", "~!@#$%^&*()_+{}|:\"<>?"))
@@ -66,6 +66,11 @@ def pretty_behavior(s: str) -> str | None:
     if base.startswith("cur_"):
         verb, _, what = base[4:].partition("_")
         return f"{'Sel' if verb == 'SELECT' else verb.title()[:3]} {what.lower()}".strip()
+    if base == "mod_tab_chord" and arg:
+        mod = {"LALT": "Alt", "LCTRL": "Ctrl", "LGUI": "Super", "RALT": "Alt", "RCTRL": "Ctrl", "RGUI": "Super"}
+        return mod.get(arg.split()[0], arg.split()[0]) + "+Tab"
+    if base == "caps_word":
+        return "Caps Word"
     if base == "symb_dotdot":
         return "../"
     words = base.replace("_", " ").strip()
@@ -141,8 +146,15 @@ def main() -> int:
             "shift": [l["t"] in SHIFT_LEGENDS for l in legends],
         })
 
+    combos = []
+    for c in parsed.get("combos", []):
+        legend = {k: v for k, v in norm(c.get("k", "")).items() if k in ("t", "h", "s") and v}
+        names = c.get("l") or layer_names
+        combos.append({"keys": list(c.get("p", [])), "legend": legend,
+                       "layers": [layer_names.index(n) for n in names if n in layer_names]})
+
     out = {"format": 1, "keyboard": a.name, "commit": a.commit, "built_unix": int(time.time()),
-           "layers": layer_names, "keys": keys}
+           "layers": layer_names, "keys": keys, "combos": combos}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
     print(f"wrote {a.out}: {len(layer_names)} layers, {len(keys)} keys")

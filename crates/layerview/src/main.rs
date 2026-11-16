@@ -84,6 +84,7 @@ impl Hub {
             "name": d.keyboard,
             "commit": d.commit,
             "layers": d.layers,
+            "combos": d.combos,
             "keys": d.keys.iter().map(|k| json!({
                 "x": k.x, "y": k.y, "w": k.w, "h": k.h, "r": k.r, "pos": k.pos, "legends": k.legends
             })).collect::<Vec<_>>(),

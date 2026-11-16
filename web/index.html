@@ -54,7 +54,7 @@ function pretty(name){ return String(name || "").replace(/_/g, " "); }
 function topLayer(bits){ var t = 0; for (var i = 0; i < 32; i++) if (bits >>> i & 1) t = i; return t; }
 
 var layout = null, state = null, status = { kind: "searching", message: "Connecting…" };
-var nodes = [], hud = null, layerIndex = {}, howTo = {}, bounds = null;
+var nodes = [], hud = null, layerIndex = {}, howTo = {}, bounds = null, posIdx = {}, legendRows = [];
 
 // Which layer (if any) a legend switches to, and how.
 function activator(l){
@@ -68,8 +68,16 @@ function activator(l){
 }
 
 // Breadth-first from the base layer: describe how each layer is reached.
+// howTo[layer] = full wording ("hold Magic  →  tap 2"); howShort[layer] = keys only ("Magic › 2").
+var howShort = {}, howVerb = {};
+function addRoute(m, target, verb, keys){
+  howVerb[target] = verb;   // last step: "hold" = momentary, "tap"/"press" = a mode you stay in
+  var step = verb + " " + keys;
+  howTo[target] = howTo[m] ? howTo[m] + "  →  " + step : step;
+  howShort[target] = howShort[m] ? howShort[m] + " › " + keys : keys;
+}
 function computeHowTo(){
-  howTo = { 0: "" };
+  howTo = { 0: "" }; howShort = { 0: "" };
   var queue = [0];
   while (queue.length) {
     var m = queue.shift();
@@ -79,8 +87,15 @@ function computeHowTo(){
       var base = (k.legends[0] && k.legends[0].t) || "";
       var keyName = a.pure ? (m === 0 ? base : (base || "?")) : a.label;
       if (a.pure && m === 0) keyName = base || pretty(layout.layers[a.layer]);
-      var step = a.how + " " + keyName;
-      howTo[a.layer] = howTo[m] ? howTo[m] + "  →  " + step : step;
+      addRoute(m, a.layer, a.how, keyName);
+      queue.push(a.layer);
+    });
+    (layout.combos || []).forEach(function(c){
+      var a = activator(c.legend);
+      if (!a || howTo[a.layer] !== undefined) return;
+      if (c.layers && c.layers.length && c.layers.indexOf(m) < 0) return;
+      var names = c.keys.map(function(p){ var i = posIdx[p]; var l = i !== undefined && layout.keys[i].legends[0]; return (l && l.t) || "?"; });
+      addRoute(m, a.layer, c.legend.h === "toggle" ? "press" : "hold", names.join(" + "));
       queue.push(a.layer);
     });
   }
@@ -90,6 +105,7 @@ function build(){
   var stage = document.getElementById("stage");
   if (!layout || !layout.keys.length) return;
   layerIndex = {}; layout.layers.forEach(function(n, i){ layerIndex[n] = i; });
+  posIdx = {}; layout.keys.forEach(function(k, i){ posIdx[k.pos] = i; });
   computeHowTo();
   var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
   layout.keys.forEach(function(k){
@@ -109,18 +125,35 @@ function build(){
       + '<text class="sub" y="' + (h / 2 - 0.195) + '" font-size="0.2"></text></g>';
   });
   // HUD in the gap between the halves, above the thumb clusters.
-  var gx = (minX + maxX) / 2;
-  s += '<g id="hud"><text class="name" x="' + gx + '" y="' + (minY + 1.35) + '" font-size="0.78"></text>'
-     + '<text class="how" x="' + gx + '" y="' + (minY + 2.15) + '" font-size="0.3"></text>'
-     + '<text class="also" x="' + gx + '" y="' + (minY + 2.65) + '" font-size="0.24"></text>'
-     + '<text class="status" x="' + gx + '" y="' + (minY + 3.2) + '" font-size="0.26"></text></g>';
+  var gx = (minX + maxX) / 2, leftEdge = -1e9, rightEdge = 1e9;
+  layout.keys.forEach(function(k){
+    if (k.y > 4.5) return;                       // the gap above the thumb clusters
+    var c = k.x + k.w / 2;
+    if (c < gx) leftEdge = Math.max(leftEdge, k.x + k.w); else rightEdge = Math.min(rightEdge, k.x);
+  });
+  var gapW = Math.max(3, rightEdge - leftEdge) - 0.3, colW = gapW / 2;
+  var entries = layout.layers.map(function(n, i){ return i; }).filter(function(i){ return i > 0; });
+  var perCol = Math.ceil(entries.length / 2), lh = Math.min(0.4, 2.3 / Math.max(perCol, 1));
+  s += '<g id="hud"><text class="name" x="' + gx + '" y="' + (minY + 1.15) + '" font-size="0.6"></text>'
+     + '<text class="how" x="' + gx + '" y="' + (minY + 1.8) + '" font-size="0.27"></text>';
+  legendRows = [];
+  entries.forEach(function(li, n){
+    var col = n < perCol ? 0 : 1, row = n % perCol;
+    var x = gx - gapW / 2 + col * colW, y = minY + 2.45 + row * lh;
+    s += '<g class="lrow" data-l="' + li + '"><circle cx="' + (x + 0.1) + '" cy="' + y + '" r="0.08"/>'
+       + '<text x="' + (x + 0.26) + '" y="' + y + '" font-size="' + (lh * 0.58) + '" style="text-anchor:start">'
+       + '<tspan class="lname"></tspan><tspan class="lhow" dx="0.12"></tspan></text></g>';
+    legendRows.push({ layer: li, max: Math.floor(colW / (lh * 0.58 * 0.52)) });
+  });
+  s += '<text class="status" x="' + gx + '" y="' + (minY + 2.6 + perCol * lh) + '" font-size="0.26"></text></g>';
   stage.innerHTML = s + "</svg>";
   nodes = Array.prototype.map.call(stage.querySelectorAll(".k"), function(g){
     return { g: g, cap: g.querySelector(".cap"), strip: g.querySelector(".strip"), shifted: g.querySelector(".shifted"),
              tap: g.querySelector(".tap"), sub: g.querySelector(".sub") };
   });
   var h = stage.querySelector("#hud");
-  hud = { name: h.querySelector(".name"), how: h.querySelector(".how"), also: h.querySelector(".also"), status: h.querySelector(".status") };
+  hud = { name: h.querySelector(".name"), how: h.querySelector(".how"), status: h.querySelector(".status"),
+          rows: Array.prototype.slice.call(h.querySelectorAll(".lrow")) };
   render();
 }
 
@@ -143,7 +176,7 @@ function render(){
     if (tap === "▽") tap = "";
     var act = activator(l);
     var sub = l.h || "";
-    var isFall = eff < top && top > 0;       // falls through from a lower layer
+    var isFall = eff < top && top > 0 && howVerb[top] === "hold";   // dim fall-through only while holding a layer
     var empty = !tap && !sub;
 
     n.tap.textContent = tap;
@@ -174,12 +207,21 @@ function render(){
   // HUD: current layer, how to get there, other active layers, problems.
   hud.name.textContent = pretty(layout.layers[top] || ("Layer " + top));
   hud.name.style.fill = color(top);
-  hud.name.setAttribute("font-size", top ? 0.78 : 0.42);       // quiet on the base layer
+  hud.name.setAttribute("font-size", top ? 0.6 : 0.4);        // quiet on the base layer
   hud.name.style.opacity = top ? 1 : 0.55;
   hud.how.textContent = top ? (howTo[top] || "") : "";
-  var others = [];
-  layout.layers.forEach(function(n, i){ if (i && i !== top && (st.layers >>> i & 1)) others.push(pretty(n)); });
-  hud.also.textContent = others.length ? "also on: " + others.join(", ") : "";
+  hud.rows.forEach(function(g, n){
+    var r = legendRows[n], li = r.layer, on = (st.layers >>> li & 1) === 1;
+    var name = pretty(layout.layers[li]), how = howShort[li] === undefined ? "not reachable" : howShort[li];
+    var room = r.max - name.length - 1;
+    if (how.length > room) how = room > 3 ? how.slice(0, room - 1) + "…" : "";
+    g.querySelector("circle").style.fill = color(li);
+    var ln = g.querySelector(".lname"); ln.textContent = name; ln.style.fill = color(li);
+    var lh = g.querySelector(".lhow"); lh.textContent = how;
+    lh.style.fill = on ? "#f1eef8" : "#8a859c";
+    g.style.opacity = on ? 1 : (top ? 0.45 : 0.85);
+    ln.style.fontWeight = on ? 800 : 600;
+  });
   hud.status.textContent = status.kind === "live" ? "" : status.message;
 }
 
