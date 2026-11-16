@@ -39,6 +39,8 @@ public class MainActivity extends Activity {
     private String url = DEFAULT_URL;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean showingError = false;
+    /** Maintenance: kiosk lock released until the app is launched again without the flag. */
+    private static boolean maintenance = false;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -51,6 +53,7 @@ public class MainActivity extends Activity {
             getPreferences(Context.MODE_PRIVATE).edit().putString("url", fromIntent).apply();
         }
         url = getPreferences(Context.MODE_PRIVATE).getString("url", DEFAULT_URL);
+        handleMaintenance(getIntent());
 
         web = new WebView(this);
         web.setBackgroundColor(Color.BLACK);
@@ -105,7 +108,7 @@ public class MainActivity extends Activity {
             c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
         DevicePolicyManager dpm = getSystemService(DevicePolicyManager.class);
-        if (dpm != null && dpm.isLockTaskPermitted(getPackageName())) {
+        if (!maintenance && dpm != null && dpm.isLockTaskPermitted(getPackageName())) {
             try {
                 startLockTask();
             } catch (IllegalStateException ignored) {
@@ -118,12 +121,35 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (handleMaintenance(intent)) return;
         String u = intent.getStringExtra("url");
         if (u != null) {
             url = u;
             getPreferences(Context.MODE_PRIVATE).edit().putString("url", u).apply();
             load();
         }
+    }
+
+    /**
+     * `adb shell am start -n <pkg>/.MainActivity --ez maintenance true` releases the kiosk lock
+     * and opens Settings; launching with `--ez maintenance false` (or rebooting) re-locks.
+     */
+    private boolean handleMaintenance(Intent intent) {
+        if (intent == null || !intent.hasExtra("maintenance")) return false;
+        maintenance = intent.getBooleanExtra("maintenance", false);
+        if (maintenance) {
+            try {
+                stopLockTask();
+            } catch (IllegalStateException ignored) {
+                // not pinned
+            }
+            Intent settings = new Intent(Settings.ACTION_SETTINGS);
+            settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(settings);
+        } else {
+            onResume();
+        }
+        return true;
     }
 
     @Override

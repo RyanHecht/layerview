@@ -9,5 +9,5 @@ adb shell dpm set-device-owner "$PKG/.AdminReceiver"
 adb reverse tcp:8740 tcp:8740
 adb shell am start -n "$PKG/.MainActivity"
 echo "Done. Kiosk is device owner; the phone shows http://localhost:8740 (this computer's layerview)."
-echo "Maintenance: adb shell am task lock stop   (leave kiosk mode until next launch)"
+echo "Maintenance: adb shell am start -n $PKG/.MainActivity --ez maintenance true   (unlock + Settings; false re-locks)"
 echo "Remove:      adb shell dpm remove-active-admin $PKG/.AdminReceiver && adb uninstall $PKG"

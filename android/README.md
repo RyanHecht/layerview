@@ -34,5 +34,16 @@ screen. No Wi-Fi: the phone reaches the computer's `localhost:8740` through
 
 A phone left on a charger forever is hard on its battery. If the phone offers a
 charge limit (Pixels: Settings → Battery → Charging optimization → Limit to 80%,
-Android 15+), turn it on. Kiosk mode blocks the Settings app, so for maintenance:
-`adb shell am task lock stop`, then `adb shell am start -a android.settings.SETTINGS`.
+Android 15+), turn it on.
+
+## Maintenance (updates, settings)
+
+Kiosk mode blocks everything else, by design (a device owner's lock can't be
+broken from the shell). To step out:
+
+```sh
+adb shell am start -n io.github.ryanhecht.layerview.kiosk/.MainActivity --ez maintenance true   # unlock + open Settings
+adb shell am start -n io.github.ryanhecht.layerview.kiosk/.MainActivity --ez maintenance false  # lock again
+```
+
+A reboot also re-locks.
