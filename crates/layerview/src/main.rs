@@ -48,6 +48,8 @@ struct Hub {
     alert: Mutex<Value>,
     shortcuts: Mutex<Value>,
     usage: Mutex<usage::Tracker>,
+    transition: Mutex<Value>,
+    esc_pos: Mutex<Option<usize>>,
     track_usage: std::sync::atomic::AtomicBool,
 }
 
@@ -110,6 +112,12 @@ impl Hub {
             f(&mut live);
             (old, live.clone())
         };
+        // Esc dismisses a handed-off keycap view.
+        if let Some(esc) = *self.esc_pos.lock().unwrap() {
+            if new.pressed.contains(&esc) && !old.pressed.contains(&esc) {
+                finish_keycap_view();
+            }
+        }
         if self.track_usage.load(std::sync::atomic::Ordering::Relaxed) && new.connected {
             if let Some(d) = self.display.lock().unwrap().as_ref() {
                 self.usage.lock().unwrap().observe(
@@ -166,6 +174,7 @@ impl Hub {
         }
         let _ = tx.send(Self::sse("alert", &self.alert.lock().unwrap()));
         let _ = tx.send(Self::sse("shortcuts", &self.shortcuts.lock().unwrap()));
+        let _ = tx.send(Self::sse("transition", &self.transition.lock().unwrap()));
         self.clients.lock().unwrap().push(tx);
         rx
     }
@@ -253,6 +262,10 @@ fn main() {
         let hub = Arc::clone(&hub);
         thread::spawn(move || watch_alerts(&hub, default_alerts_path()));
     }
+    {
+        let hub = Arc::clone(&hub);
+        thread::spawn(move || watch_pending(&hub));
+    }
     if let Some(path) = args.niri.clone() {
         let hub = Arc::clone(&hub);
         thread::spawn(move || watch_niri(&hub, path));
@@ -330,6 +343,56 @@ fn spawn_modifier_reader(hub: Arc<Hub>, raw_path: &std::ffi::CStr) {
         }
         hub.update_live(|l| l.mods = 0);
     });
+}
+
+/// Keycaps now match the new layout: record it as the keycap baseline, end the view.
+fn finish_keycap_view() {
+    if let Some(v) = std::fs::read(pending_path()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+        if let Ok(b) = serde_json::to_vec(&v["new"]) {
+            let _ = layerview_format::write_atomic(&layerview_format::keycaps_path(), &b);
+        }
+    }
+    let _ = std::fs::remove_file(pending_path());
+}
+
+fn pending_path() -> PathBuf {
+    layerview_format::state_dir().join("layerview").join("pending.json")
+}
+
+/// Keycap-move view: shown while the flasher that wrote pending.json runs
+/// (pid alive), or until its handoff deadline; stale files are removed.
+fn watch_pending(hub: &Hub) {
+    loop {
+        let v = std::fs::read(pending_path()).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let active = v.as_ref().is_some_and(|v| {
+            let pid = v["pid"].as_u64().unwrap_or(0);
+            let until = v["until"].as_u64().unwrap_or(0);
+            let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            (pid != 0 && std::path::Path::new(&format!("/proc/{pid}")).exists()) || until > now
+        });
+        if v.as_ref().is_some_and(|v| v["pid"].as_u64() == Some(0)) && !active {
+            finish_keycap_view(); // handoff deadline passed: assume the caps were rearranged
+        } else if v.is_some() && !active {
+            let _ = std::fs::remove_file(pending_path());
+        }
+        let out = if active { let v = v.unwrap(); json!({ "old": v["old"], "new": v["new"] }) } else { Value::Null };
+        let esc = if active {
+            out["new"]["keys"].as_array().and_then(|ks| {
+                ks.iter().find(|k| k["legends"][0]["t"] == "Esc").and_then(|k| k["pos"].as_u64()).map(|p| p as usize)
+            })
+        } else {
+            None
+        };
+        *hub.esc_pos.lock().unwrap() = esc;
+        let mut cur = hub.transition.lock().unwrap();
+        if *cur != out {
+            eprintln!("[layerview] keycap view {}", if active { "on" } else { "off" });
+            *cur = out.clone();
+            drop(cur);
+            hub.broadcast("transition", &out);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
 }
 
 /// Parses window-manager shortcuts from a niri config (following `include`s)

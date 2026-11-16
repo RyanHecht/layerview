@@ -294,10 +294,62 @@ function setStatus(s){
   } else render();
 }
 
+// --- keycap moves while flashing a new keymap ---
+var transition = null;
+function renderTransition(){
+  var o = transition.old, n = transition.new;
+  var lab = function(d){ var m = {}; d.keys.forEach(function(k){ m[k.pos] = ((k.legends[0] || {}).t || "").replace("▽", ""); }); return m; };
+  var A = lab(o), B = lab(n), keys = n.keys, ctr = {};
+  keys.forEach(function(k){ ctr[k.pos] = [k.x + k.w / 2, k.y + k.h / 2]; });
+  var labels = {}; keys.forEach(function(k){ if (A[k.pos]) labels[A[k.pos]] = 1; if (B[k.pos]) labels[B[k.pos]] = 1; });
+  var moves = [], added = [], spare = [];
+  Object.keys(labels).forEach(function(L){
+    var from = keys.filter(function(k){ return A[k.pos] === L && B[k.pos] !== L; }).map(function(k){ return k.pos; });
+    var to = keys.filter(function(k){ return B[k.pos] === L && A[k.pos] !== L; }).map(function(k){ return k.pos; });
+    to.forEach(function(t){
+      if (!from.length) { added.push({ label: L, to: t }); return; }
+      var bi = 0, bd = 1e9;
+      from.forEach(function(f, i){ var dx = ctr[f][0] - ctr[t][0], dy = ctr[f][1] - ctr[t][1], dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; bi = i; } });
+      moves.push({ label: L, from: from.splice(bi, 1)[0], to: t });
+    });
+    from.forEach(function(f){ spare.push({ label: L, from: f }); });
+  });
+  var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  keys.forEach(function(k){ var p = Math.max(k.w, k.h) * 0.32; minX = Math.min(minX, k.x - p); minY = Math.min(minY, k.y - p); maxX = Math.max(maxX, k.x + k.w + p); maxY = Math.max(maxY, k.y + k.h + p); });
+  var role = {}; moves.forEach(function(m, i){ role[m.to] = { kind: "to", c: color(1 + i % (HUES.length - 1)), m: m }; });
+  added.forEach(function(a){ role[a.to] = { kind: "new", c: "#ff4fd8", m: a }; });
+  spare.forEach(function(sp){ if (!role[sp.from]) role[sp.from] = { kind: "spare", c: "#8a859c", m: sp }; });
+  var s = '<svg viewBox="' + minX + ' ' + minY + ' ' + (maxX - minX) + ' ' + (maxY - minY) + '" preserveAspectRatio="xMidYMid meet"><defs>';
+  moves.forEach(function(m, i){ s += '<marker id="ah' + i + '" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="' + color(1 + i % (HUES.length - 1)) + '"/></marker>'; });
+  s += '</defs>';
+  keys.forEach(function(k){
+    var cx = k.x + k.w / 2, cy = k.y + k.h / 2, g = 0.05, w = k.w - 2 * g, h = k.h - 2 * g, r = role[k.pos];
+    var fill = r ? mix(r.c, 0.3) : "#0e0d13", stroke = r ? r.c : "#1f1d29", txt = B[k.pos] || "";
+    var fs = txt.length > 6 ? 0.2 : txt.length > 4 ? 0.24 : txt.length > 2 ? 0.3 : 0.4;
+    s += '<g transform="translate(' + cx + ' ' + cy + ') rotate(' + (k.r || 0) + ')"><rect x="' + (-w / 2) + '" y="' + (-h / 2) + '" width="' + w + '" height="' + h + '" rx="0.11" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + (r ? 0.06 : 0.03) + '"' + (r && r.kind === "new" ? ' stroke-dasharray="0.12 0.08"' : '') + '/>'
+      + '<text font-size="' + fs + '" fill="' + (r ? "#f1eef8" : "#4a4658") + '" font-weight="' + (r ? 700 : 500) + '">' + esc(r && r.kind === "spare" ? "✕ " + A[k.pos] : txt) + '</text>'
+      + (r && r.kind === "new" ? '<text y="' + (h / 2 - 0.16) + '" font-size="0.15" fill="#ff4fd8">new cap</text>' : '')
+      + '</g>';
+  });
+  moves.forEach(function(m, i){
+    var a = ctr[m.from], b = ctr[m.to], dx = b[0] - a[0], dy = b[1] - a[1], d = Math.sqrt(dx * dx + dy * dy) || 1, sh = 0.32;
+    s += '<line x1="' + (a[0] + dx / d * sh) + '" y1="' + (a[1] + dy / d * sh) + '" x2="' + (b[0] - dx / d * sh) + '" y2="' + (b[1] - dy / d * sh) + '" stroke="' + color(1 + i % (HUES.length - 1)) + '" stroke-width="0.07" stroke-linecap="round" marker-end="url(#ah' + i + ')" opacity="0.9"/>';
+  });
+  var gx = (minX + maxX) / 2, y = minY + 1.15;
+  s += '<text x="' + gx + '" y="' + y + '" font-size="0.6" font-weight="700" fill="#ffb547">Keycap moves</text>';
+  s += '<text x="' + gx + '" y="' + (y + 0.62) + '" font-size="0.26" fill="#c9c3da">' + moves.length + ' to move' + (added.length ? ' · ' + added.length + ' need a new cap' : '') + (spare.length ? ' · ' + spare.length + ' spare' : '') + '</text>';
+  var list = moves.map(function(m){ return m.label; }).concat(added.map(function(a){ return a.label + " (new)"; }));
+  for (var i = 0; i < list.length; i += 4) s += '<text x="' + gx + '" y="' + (y + 1.15 + (i / 4) * 0.36) + '" font-size="0.24" fill="#8a859c">' + esc(list.slice(i, i + 4).join("   ")) + '</text>';
+  s += '<text x="' + gx + '" y="' + (y + 1.3 + Math.ceil(list.length / 4) * 0.36) + '" font-size="0.22" fill="#7f7a93">Press Esc on the keyboard when you are done</text>';
+  document.getElementById("stage").innerHTML = s + "</svg>";
+  nodes = []; activity();
+}
+
 // --- idle dimming + pixel shift (OLED burn-in care) ---
 var lastActivity = Date.now();
 function activity(){ lastActivity = Date.now(); document.body.classList.remove("idle", "sleep"); }
 setInterval(function(){
+  if (transition) lastActivity = Date.now();          // never dim while showing keycap moves
   var idle = Date.now() - lastActivity;
   document.body.classList.toggle("idle", idle > 45000 && idle <= 600000);
   document.body.classList.toggle("sleep", idle > 600000);
@@ -315,9 +367,13 @@ es.addEventListener("hello", function(e){
   pageId = id;
 });
 es.addEventListener("status", function(e){ setStatus(JSON.parse(e.data)); });
+es.addEventListener("transition", function(e){
+  transition = JSON.parse(e.data);
+  if (transition) renderTransition(); else if (layout) build();
+});
 es.addEventListener("shortcuts", function(e){ SHORTCUTS = JSON.parse(e.data) || []; render(); });
 es.addEventListener("alert", function(e){ alertMsg = JSON.parse(e.data).message; if (alertMsg) activity(); render(); });
-es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); build(); });
+es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); if (!transition) build(); });
 es.addEventListener("state", function(e){
   var prev = state; state = JSON.parse(e.data);
   if (!prev || prev.layers !== state.layers || (state.pressed && state.pressed.length)) activity();

@@ -112,6 +112,12 @@ pub fn default_alerts_path() -> PathBuf {
     state_dir().join("layerview").join("alerts.json")
 }
 
+/// The layout the physical keycaps are currently arranged for (a display file).
+/// Keycap moves are computed against it; updated when a rearrangement is done.
+pub fn keycaps_path() -> PathBuf {
+    state_dir().join("layerview").join("keycaps.json")
+}
+
 pub fn state_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)

@@ -10,7 +10,7 @@
 //! Linux only for now: waits for /dev/disk/by-label/<LABEL>, mounts via
 //! udisksctl when the desktop didn't automount it, copies, waits for reboot.
 
-use layerview_format::{cache_dir, default_display_path, state_dir, write_atomic, FlashManifest};
+use layerview_format::{cache_dir, default_display_path, keycaps_path, state_dir, write_atomic, FlashManifest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -242,10 +242,30 @@ fn wait_gone(link: &Path, timeout: Duration) -> bool {
 // ---------------------------------------------------------------- main
 
 fn main() {
-    if let Err(e) = run(parse_args()) {
+    let result = run(parse_args());
+    // Our keycap view ends with us (unless it was handed off to the display, see run()).
+    let mine = format!("\"pid\": {}", std::process::id());
+    if std::fs::read_to_string(pending_path()).is_ok_and(|t| t.contains(&mine)) {
+        let _ = std::fs::remove_file(pending_path());
+    }
+    if let Err(e) = result {
         eprintln!("\nerror: {e}");
         std::process::exit(1);
     }
+}
+
+/// While this file exists (and the pid in it is alive), layerview shows which
+/// keycaps move between the old and new base layers.
+fn pending_path() -> PathBuf {
+    state_dir().join("layerview").join("pending.json")
+}
+
+/// Base-layer labels per key position, from a display file.
+fn base_labels(bytes: &[u8]) -> Option<Vec<String>> {
+    let d: layerview_format::DisplayFile = serde_json::from_slice(bytes).ok()?;
+    let mut keys = d.keys;
+    keys.sort_by_key(|k| k.pos);
+    Some(keys.into_iter().map(|k| k.legends.into_iter().next().map(|l| l.t).unwrap_or_default()).collect())
 }
 
 fn run(args: Args) -> Res<()> {
@@ -256,6 +276,28 @@ fn run(args: Args) -> Res<()> {
     let msg = m.message.lines().next().unwrap_or("");
     let short = m.commit.get(..7).unwrap_or(&m.commit);
     println!("Build: {} {short} \"{msg}\"", m.keyboard);
+
+    // Keycap moves: show them on the display while flashing, if the printed labels change.
+    let mut keycaps_change = false;
+    if let (false, Some(name)) = (args.no_display, &m.display) {
+        let new = std::fs::read(dir.join(name))?;
+        if let Ok(old) = std::fs::read(keycaps_path()).or_else(|_| std::fs::read(&args.display_dest)) {
+            if let (Some(a), Some(b)) = (base_labels(&old), base_labels(&new)) {
+                if a != b {
+                    keycaps_change = true;
+                    let pending = format!(
+                        "{{\"pid\": {}, \"old\": {}, \"new\": {}}}",
+                        std::process::id(),
+                        String::from_utf8_lossy(&old),
+                        String::from_utf8_lossy(&new)
+                    );
+                    write_atomic(&pending_path(), pending.as_bytes())?;
+                    let moved = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+                    println!("Keycaps: {moved} key labels change. The layer display now shows which caps to move.");
+                }
+            }
+        }
+    }
 
     let mut flashed_any = false;
     for t in &m.targets {
@@ -307,6 +349,23 @@ fn run(args: Args) -> Res<()> {
         }
     }
     let _ = flashed_any;
+    if keycaps_change {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            print!("Rearrange your keycaps (see the layer display), then press Enter… ");
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            if let Some(name) = &m.display {
+                write_atomic(&keycaps_path(), &std::fs::read(dir.join(name))?)?; // caps now match this layout
+            }
+        } else if let Ok(t) = std::fs::read_to_string(pending_path()) {
+            // No terminal to wait on: hand the view to the display for 20 minutes (Esc dismisses it).
+            let until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) + 20 * 60;
+            let handed = t.replacen(&format!("\"pid\": {}", std::process::id()), &format!("\"pid\": 0, \"until\": {until}"), 1);
+            write_atomic(&pending_path(), handed.as_bytes())?;
+            println!("Keycap moves stay on the layer display for 20 minutes; press Esc on the keyboard when done.");
+        }
+    }
     println!("Done.");
     Ok(())
 }
