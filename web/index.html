@@ -76,6 +76,13 @@ function addRoute(m, target, verb, keys){
   howTo[target] = howTo[m] ? howTo[m] + "  →  " + step : step;
   howShort[target] = howShort[m] ? howShort[m] + " › " + keys : keys;
 }
+// "Space" -> "left Space" when the base layer has that label on both halves.
+function sided(k, name){
+  var xs = layout.keys.map(function(q){ return q.x + q.w / 2; });
+  var mid = (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2;
+  var same = layout.keys.filter(function(q){ return ((q.legends[0] || {}).t || "") === name; }).length;
+  return same > 1 ? ((k.x + k.w / 2) < mid ? "left " : "right ") + name : name;
+}
 function computeHowTo(){
   howTo = { 0: "" }; howShort = { 0: "" };
   var queue = [0];
@@ -87,7 +94,7 @@ function computeHowTo(){
       var base = (k.legends[0] && k.legends[0].t) || "";
       var keyName = a.pure ? (m === 0 ? base : (base || "?")) : a.label;
       if (a.pure && m === 0) keyName = base || pretty(layout.layers[a.layer]);
-      addRoute(m, a.layer, a.how, keyName);
+      addRoute(m, a.layer, a.how, m === 0 ? sided(k, keyName) : keyName);
       queue.push(a.layer);
     });
     (layout.combos || []).forEach(function(c){
