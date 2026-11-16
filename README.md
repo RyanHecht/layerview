@@ -23,6 +23,10 @@ Tools for ZMK keyboards, built as separate pieces so you can take only what you 
 
 The pieces only meet through two documented files ([docs/formats.md](docs/formats.md)): the **display file** and the **flash manifest**. Use the flasher without any display, use the display with your own build pipeline, or use the exporter on its own.
 
+## Window-manager shortcuts
+
+If a niri config exists (`~/.config/niri/config.kdl`, or `--niri-config FILE`), `layerview` parses its binds (following `include`s, using `hotkey-overlay-title` when present) and reads the keyboard's own HID report for the exact modifiers held. While you hold modifiers that shortcuts use, the display switches to a **Window manager** view: each key shows the action it would trigger (Focus ←, Close, WS ↓, your titles...), and unbound keys dim. `--no-niri` turns it off.
+
 ## Firmware requirements for the live display
 
 `layerview` reads reports that the KeyPeek layer notifier sends over Raw HID: active layers and key presses by position. It never sends anything to the keyboard, so it also works through KVMs that only pass keyboard-to-computer traffic. Add to your zmk-config:

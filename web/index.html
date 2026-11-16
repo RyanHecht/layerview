@@ -54,6 +54,35 @@ function pretty(name){ return String(name || "").replace(/_/g, " "); }
 function topLayer(bits){ var t = 0; for (var i = 0; i < 32; i++) if (bits >>> i & 1) t = i; return t; }
 
 var layout = null, state = null, status = { kind: "searching", message: "Connecting…" }, alertMsg = null;
+// Window-manager shortcuts (e.g. from the niri config), shown while their modifiers are held.
+var SHORTCUTS = [], WM = "#3ad0ff";
+var KEYSYM = { "←":"left", "→":"right", "↑":"up", "↓":"down", "PgUp":"page_up", "PgDn":"page_down", "Home":"home", "End":"end",
+  "[":"bracketleft", "]":"bracketright", ",":"comma", ".":"period", "/":"slash", "-":"minus", "=":"equal", "Esc":"escape",
+  "Space":"space", "Enter":"return", "Tab":"tab", "PrtSc":"print", "Bksp":"backspace", "Del":"delete", ";":"semicolon",
+  "'":"apostrophe", "`":"grave", "\\":"backslash", "Ins":"insert" };
+function keysym(label){ if (!label) return ""; return KEYSYM[label] || label.toLowerCase(); }
+// Shortcut labels: up to two lines, sized to fit a key.
+function wmText(el, label){
+  var lines = [label], w = label.split(" ");
+  if (label.length > 9 && w.length > 1) {
+    var best = null;
+    for (var i = 1; i < w.length; i++) {
+      var a = w.slice(0, i).join(" "), b = w.slice(i).join(" "), m = Math.max(a.length, b.length);
+      if (!best || m < best.m) best = { a: a, b: b, m: m };
+    }
+    lines = [best.a, best.b];
+  }
+  lines = lines.map(function(t){ return t.length > 12 ? t.slice(0, 11) + "…" : t; });
+  var longest = Math.max.apply(null, lines.map(function(t){ return t.length; }));
+  var fs = longest <= 5 ? 0.3 : longest <= 8 ? 0.23 : longest <= 10 ? 0.19 : 0.165;
+  el.textContent = ""; el.setAttribute("font-size", fs); el.setAttribute("y", 0.06);
+  lines.forEach(function(t, i){
+    var ts = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+    ts.setAttribute("x", 0); ts.setAttribute("dy", i ? fs * 1.15 : -(lines.length - 1) * fs * 0.575); ts.textContent = t;
+    el.appendChild(ts);
+  });
+}
+function heldMods(m){ var h = []; if (m & 0x88) h.push("super"); if (m & 0x11) h.push("ctrl"); if (m & 0x44) h.push("alt"); if (m & 0x22) h.push("shift"); return h; }
 var nodes = [], hud = null, layerIndex = {}, howTo = {}, bounds = null, posIdx = {}, legendRows = [];
 
 // Which layer (if any) a legend switches to, and how.
@@ -174,6 +203,11 @@ function render(){
   var st = state || { layers: 1, pressed: [], effective: [], shift: false };
   var top = topLayer(st.layers);
   var pressed = {}; (st.pressed || []).forEach(function(i){ pressed[i] = 1; });
+  // Modifiers held that a shortcut uses (anything beyond Shift alone) -> window-manager view.
+  var held = heldMods(st.mods || 0), heldKey = held.slice().sort().join("+"), wm = {};
+  if (held.some(function(m){ return m !== "shift"; }))
+    SHORTCUTS.forEach(function(b){ if (b.mods.slice().sort().join("+") === heldKey && !wm[b.key]) wm[b.key] = b.label; });
+  var wmOn = Object.keys(wm).length > 0;
 
   layout.keys.forEach(function(k, i){
     var n = nodes[i];
@@ -206,17 +240,24 @@ function render(){
     if (eff > 0 && !(act && act.pure)) { capFill = mix(color(eff), 0.26); capStroke = mix(color(eff), 0.7); }
     n.cap.style.fill = capFill; n.cap.style.stroke = capStroke;
     n.strip.style.fill = stripFill; n.sub.style.fill = subFill;
+    var wmLabel = wmOn ? wm[keysym(l.t)] : undefined;
+    if (wmLabel !== undefined) {                       // this key + held modifiers = a shortcut
+      n.shifted.textContent = l.t || "";
+      wmText(n.tap, wmLabel);
+      n.sub.textContent = ""; n.strip.style.display = "none";
+      n.cap.style.fill = mix(WM, 0.3); n.cap.style.stroke = WM;
+    }
     n.g.classList.toggle("empty", empty && !act);
-    n.g.classList.toggle("fall", isFall && !act);
+    n.g.classList.toggle("fall", (isFall && !act) || (wmOn && wmLabel === undefined && !pressed[i]));
     n.g.classList.toggle("pressed", !!pressed[i]);
   });
 
   // HUD: current layer, how to get there, other active layers, problems.
-  hud.name.textContent = pretty(layout.layers[top] || ("Layer " + top));
-  hud.name.style.fill = color(top);
-  hud.name.setAttribute("font-size", top ? 0.6 : 0.4);        // quiet on the base layer
-  hud.name.style.opacity = top ? 1 : 0.55;
-  hud.how.textContent = top ? (howTo[top] || "") : "";
+  hud.name.textContent = wmOn ? "Window manager" : pretty(layout.layers[top] || ("Layer " + top));
+  hud.name.style.fill = wmOn ? WM : color(top);
+  hud.name.setAttribute("font-size", wmOn || top ? 0.6 : 0.4);        // quiet on the base layer
+  hud.name.style.opacity = wmOn || top ? 1 : 0.55;
+  hud.how.textContent = wmOn ? held.map(function(m){ return m[0].toUpperCase() + m.slice(1); }).join(" + ") + " held" : (top ? (howTo[top] || "") : "");
   hud.rows.forEach(function(g, n){
     var r = legendRows[n], li = r.layer, on = (st.layers >>> li & 1) === 1;
     var name = pretty(layout.layers[li]), how = howShort[li] === undefined ? "not reachable" : howShort[li];
@@ -262,6 +303,7 @@ es.addEventListener("hello", function(e){
   pageId = id;
 });
 es.addEventListener("status", function(e){ setStatus(JSON.parse(e.data)); });
+es.addEventListener("shortcuts", function(e){ SHORTCUTS = JSON.parse(e.data) || []; render(); });
 es.addEventListener("alert", function(e){ alertMsg = JSON.parse(e.data).message; if (alertMsg) activity(); render(); });
 es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); build(); });
 es.addEventListener("state", function(e){

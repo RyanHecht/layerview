@@ -32,6 +32,7 @@ struct Live {
     connected: bool,
     layers: u32,
     pressed: Vec<usize>, // ZMK positions
+    mods: u8,            // HID modifier byte as the computer sees it
 }
 
 #[derive(Default)]
@@ -43,6 +44,7 @@ struct Hub {
     live: Mutex<Live>,
     last_state: Mutex<Option<Value>>,
     alert: Mutex<Value>,
+    shortcuts: Mutex<Value>,
 }
 
 impl Hub {
@@ -122,7 +124,8 @@ impl Hub {
         let shift = pressed
             .iter()
             .any(|&i| d.keys[i].shift.get(effective[i]).copied().unwrap_or(false));
-        let v = json!({ "layers": live.layers, "pressed": pressed, "effective": effective, "shift": shift });
+        let v = json!({ "layers": live.layers, "pressed": pressed, "effective": effective,
+                        "shift": shift || live.mods & 0x22 != 0, "mods": live.mods });
         drop(guard);
         let mut last = self.last_state.lock().unwrap();
         if last.as_ref() != Some(&v) {
@@ -144,6 +147,7 @@ impl Hub {
             let _ = tx.send(Self::sse("state", s));
         }
         let _ = tx.send(Self::sse("alert", &self.alert.lock().unwrap()));
+        let _ = tx.send(Self::sse("shortcuts", &self.shortcuts.lock().unwrap()));
         self.clients.lock().unwrap().push(tx);
         rx
     }
@@ -160,19 +164,23 @@ struct Args {
     listen: String,
     device_filter: String,
     display: PathBuf,
+    niri: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { listen: "127.0.0.1:8740".into(), device_filter: String::new(), display: default_display_path() };
+    let default_niri = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/niri/config.kdl")).filter(|p| p.exists());
+    let mut args = Args { listen: "127.0.0.1:8740".into(), device_filter: String::new(), display: default_display_path(), niri: default_niri };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--listen" => args.listen = it.next().expect("--listen needs ADDR:PORT"),
             "--device" => args.device_filter = it.next().expect("--device needs a product-name substring"),
             "--display" => args.display = PathBuf::from(it.next().expect("--display needs a file")),
+            "--niri-config" => args.niri = Some(PathBuf::from(it.next().expect("--niri-config needs a file"))),
+            "--no-niri" => args.niri = None,
             "-h" | "--help" => {
                 println!(
-                    "layerview [--listen 127.0.0.1:8740] [--device NAME] [--display FILE]\n\n\
+                    "layerview [--listen 127.0.0.1:8740] [--device NAME] [--display FILE] [--niri-config FILE | --no-niri]\n\n\
                      Live layer/keymap display for a ZMK keyboard running the KeyPeek layer notifier.\n\
                      --display defaults to {} (registered by zmk-uf2-flash).\n\
                      Binds localhost by default: the stream reveals every key you press.",
@@ -215,6 +223,10 @@ fn main() {
     {
         let hub = Arc::clone(&hub);
         thread::spawn(move || watch_alerts(&hub, default_alerts_path()));
+    }
+    if let Some(path) = args.niri.clone() {
+        let hub = Arc::clone(&hub);
+        thread::spawn(move || watch_niri(&hub, path));
     }
     live_loop(&hub, &args.device_filter.to_lowercase());
 }
@@ -259,6 +271,159 @@ fn watch_alerts(hub: &Hub, path: PathBuf) {
     }
 }
 
+/// Reads the keyboard's own HID report (the one the computer types from) on a
+/// second handle and publishes its modifier byte, so the display knows exactly
+/// which modifiers are active, however they were produced (thumb key, home row mod...).
+fn spawn_modifier_reader(hub: Arc<Hub>, raw_path: &std::ffi::CStr) {
+    let Ok(api) = hidapi::HidApi::new() else { return };
+    let Some(raw) = api.device_list().find(|d| d.path() == raw_path) else { return };
+    let (vid, pid, serial) = (raw.vendor_id(), raw.product_id(), raw.serial_number().map(str::to_owned));
+    let Some(kbd) = api.device_list().find(|d| {
+        d.vendor_id() == vid && d.product_id() == pid && d.usage_page() == 0x01 && d.usage() == 0x06
+            && d.serial_number().map(str::to_owned) == serial
+    }) else { return };
+    let Ok(dev) = api.open_path(kbd.path()) else { return };
+    eprintln!("[layerview] reading modifiers from {}", kbd.path().to_string_lossy());
+    thread::spawn(move || {
+        let mut buf = [0u8; 64];
+        loop {
+            match dev.read_timeout(&mut buf, 1000) {
+                Ok(0) => continue,
+                Ok(n) if n >= 2 && buf[0] == 0x01 => {
+                    let m = buf[1];
+                    if hub.live.lock().unwrap().mods != m {
+                        hub.update_live(|l| l.mods = m);
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        hub.update_live(|l| l.mods = 0);
+    });
+}
+
+/// Parses window-manager shortcuts from a niri config (following `include`s)
+/// and publishes them; re-reads when the main file changes.
+fn watch_niri(hub: &Hub, path: PathBuf) {
+    let mut seen: Option<SystemTime> = None;
+    loop {
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if mtime.is_some() && mtime != seen {
+            seen = mtime;
+            let binds = niri_binds(&path);
+            eprintln!("[layerview] niri shortcuts: {} from {}", binds.len(), path.display());
+            let v = Value::Array(binds);
+            *hub.shortcuts.lock().unwrap() = v.clone();
+            hub.broadcast("shortcuts", &v);
+        }
+        thread::sleep(Duration::from_secs(5));
+    }
+}
+
+fn niri_binds(path: &std::path::Path) -> Vec<Value> {
+    let mut text = String::new();
+    let mut files = vec![path.to_path_buf()];
+    let mut i = 0;
+    let inc = regex::Regex::new(r#"(?m)^\s*include\s+"([^"]+)""#).unwrap();
+    while i < files.len() && i < 32 {
+        if let Ok(t) = std::fs::read_to_string(&files[i]) {
+            let dir = files[i].parent().map(|d| d.to_path_buf()).unwrap_or_default();
+            for c in inc.captures_iter(&t) {
+                files.push(dir.join(&c[1]));
+            }
+            text.push_str(&t);
+            text.push('\n');
+        }
+        i += 1;
+    }
+    // KEY_COMBO [props] { action...; }   (combo starts uppercase: niri config node names are lowercase)
+    let bind = regex::Regex::new(
+        r#"(?m)^[ \t]*((?:[A-Za-z_0-9]+\+)*[A-Z][A-Za-z0-9_]*)[ \t]+((?:[a-z-]+=(?:"[^"]*"|[^\s{]+)[ \t]*)*)\{([^{}]*)\}"#,
+    )
+    .unwrap();
+    let title = regex::Regex::new(r#"hotkey-overlay-title="([^"]*)""#).unwrap();
+    let mut out = Vec::new();
+    for c in bind.captures_iter(&text) {
+        let combo = &c[1];
+        let parts: Vec<&str> = combo.split('+').collect();
+        let (key, mod_names) = parts.split_last().unwrap();
+        let mut mods = Vec::new();
+        for m in mod_names {
+            match m.to_ascii_lowercase().as_str() {
+                "mod" | "super" | "win" => mods.push("super"),
+                "ctrl" | "control" => mods.push("ctrl"),
+                "alt" => mods.push("alt"),
+                "shift" => mods.push("shift"),
+                _ => {}
+            }
+        }
+        let body = c[3].split("//").next().unwrap_or("").trim().trim_end_matches(';').trim().to_string();
+        let label = title
+            .captures(&c[2])
+            .map(|t| t[1].to_string())
+            .unwrap_or_else(|| niri_action_label(&body));
+        out.push(json!({ "mods": mods, "key": key.to_ascii_lowercase(), "label": label, "action": body }));
+    }
+    out
+}
+
+fn niri_action_label(body: &str) -> String {
+    let mut words = body.split_whitespace();
+    let action = words.next().unwrap_or("");
+    let args: Vec<String> = words.map(|w| w.trim_matches('"').to_string()).collect();
+    let dir = |s: &str| {
+        if s.ends_with("-left") { "←" } else if s.ends_with("-right") { "→" } else if s.ends_with("-up") { "↑" } else if s.ends_with("-down") { "↓" } else { "" }
+    };
+    let a = action;
+    // `spawn "niri" "msg" "action" X` is just niri action X.
+    if a == "spawn" && args.len() >= 4 && args[0] == "niri" && args[1] == "msg" && args[2] == "action" {
+        return niri_action_label(&args[3..].join(" "));
+    }
+    let end = |s: &str| if s.ends_with("-first") { "first" } else if s.ends_with("-last") { "last" } else { "" };
+    let label = match a {
+        _ if a.starts_with("focus-column-first") || a.starts_with("focus-column-last") => format!("Focus {}", end(a)),
+        _ if a.starts_with("move-column-to-first") || a.starts_with("move-column-to-last") => format!("Move {}", end(a)),
+        _ if a.starts_with("focus-column-") || a.starts_with("focus-window-") => format!("Focus {}", dir(a)),
+        _ if a.starts_with("move-column-to-workspace") => format!("Col→WS {}", if args.is_empty() { dir(a).to_string() } else { args.join(" ") }),
+        _ if a.starts_with("move-column-to-monitor") || a.starts_with("move-window-to-monitor") => format!("→Mon {}", dir(a)),
+        _ if a.starts_with("move-column-") || a.starts_with("move-window-") => format!("Move {}", dir(a)),
+        _ if a.starts_with("focus-workspace") => format!("WS {}", if args.is_empty() { dir(a).to_string() } else { args.join(" ") }),
+        _ if a.starts_with("move-workspace") => format!("Move WS {}", dir(a)),
+        _ if a.starts_with("focus-monitor") => format!("Mon {}", dir(a)),
+        _ if a.starts_with("consume-or-expel-window") => format!("Eat {}", dir(a)),
+        "close-window" => "Close".into(),
+        "maximize-column" => "Maximize".into(),
+        "fullscreen-window" => "Fullscreen".into(),
+        "toggle-window-floating" => "Float".into(),
+        "toggle-overview" => "Overview".into(),
+        "center-column" => "Center".into(),
+        "switch-preset-column-width" => "Width".into(),
+        "switch-preset-window-height" => "Height".into(),
+        "set-column-width" => format!("Width {}", args.join(" ")),
+        "set-window-height" => format!("Height {}", args.join(" ")),
+        "screenshot" => "Screenshot".into(),
+        "expand-column-to-available-width" => "Fill width".into(),
+        "center-visible-columns" => "Center all".into(),
+        "reset-window-height" => "Reset height".into(),
+        "toggle-column-tabbed-display" => "Tabbed".into(),
+        "switch-focus-between-floating-and-tiling" => "Float↔Tile".into(),
+        "show-hotkey-overlay" => "Hotkeys".into(),
+        "toggle-keyboard-shortcuts-inhibit" => "Inhibit keys".into(),
+        "power-off-monitors" => "Monitors off".into(),
+        "quit" => "Quit niri".into(),
+        "screenshot-screen" => "Shot screen".into(),
+        "screenshot-window" => "Shot window".into(),
+        "spawn" => args.first().map(|p| p.rsplit('/').next().unwrap_or(p).to_string()).unwrap_or_default(),
+        _ => {
+            let t = a.replace('-', " ");
+            let mut c = t.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        }
+    };
+    label.trim().to_string()
+}
+
 fn find_device(filter: &str) -> Option<(std::ffi::CString, String)> {
     let api = hidapi::HidApi::new().ok()?;
     let found = api
@@ -269,7 +434,7 @@ fn find_device(filter: &str) -> Option<(std::ffi::CString, String)> {
     found
 }
 
-fn live_loop(hub: &Hub, filter: &str) {
+fn live_loop(hub: &Arc<Hub>, filter: &str) {
     loop {
         let Some((path, _name)) = find_device(filter) else {
             hub.update_live(|l| *l = Live::default());
@@ -282,8 +447,9 @@ fn live_loop(hub: &Hub, filter: &str) {
             thread::sleep(Duration::from_secs(2));
             continue;
         };
-        hub.update_live(|l| *l = Live { connected: true, layers: 1, pressed: vec![] });
+        hub.update_live(|l| *l = Live { connected: true, layers: 1, pressed: vec![], mods: 0 });
         hub.refresh_status();
+        spawn_modifier_reader(Arc::clone(hub), &path);
 
         let mut buf = [0u8; 64];
         loop {
