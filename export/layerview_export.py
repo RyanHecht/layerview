@@ -29,7 +29,7 @@ PRETTY = {
     "KP DOT": ".", "KP ENTER": "Enter", "SCROLLLOCK": "ScrLk", "PAUSE BREAK": "Pause", "CAPS": "Caps",
     "K APP": "Menu", "BRI DN": "Bri−", "BRI UP": "Bri+", "PP": "Play", "PREV": "Prev", "NEXT": "Next",
     "MUTE": "Mute", "VOL DN": "Vol−", "VOL UP": "Vol+", "&lower": "Lower",
-    "&rgb_ug_status_macro": "RGB", "&bootloader": "Boot", "&sys_reset": "Reset",
+    "&rgb_ug_status_macro": "Magic", "&bootloader": "Boot", "&sys_reset": "Reset",
 }
 SHIFT_LEGENDS = {"Shift"}
 SHIFTED = dict(zip(r"`1234567890-=[]\;',./", "~!@#$%^&*()_+{}|:\"<>?"))

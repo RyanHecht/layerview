@@ -132,6 +132,8 @@ impl Hub {
 
     fn subscribe(&self) -> mpsc::Receiver<String> {
         let (tx, rx) = mpsc::channel();
+        // Lets open pages reload themselves when a new bridge serves a new page.
+        let _ = tx.send(Self::sse("hello", &json!({ "page": page_fingerprint() })));
         let _ = tx.send(Self::sse("status", &self.status.lock().unwrap()));
         if let Some(l) = self.layout_json.lock().unwrap().as_ref() {
             let _ = tx.send(Self::sse("layout", l));
@@ -142,6 +144,13 @@ impl Hub {
         self.clients.lock().unwrap().push(tx);
         rx
     }
+}
+
+fn page_fingerprint() -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    PAGE.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 struct Args {

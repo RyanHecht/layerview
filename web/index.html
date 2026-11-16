@@ -6,122 +6,185 @@
 <meta name="theme-color" content="#000000">
 <title>Layerview</title>
 <style>
-/* Layout: full-bleed black (OLED) stage; layer banner on top, board scaled to fit. Single dark theme on purpose. */
+/* Layout: the board fills the screen; layer info lives in the gap between the halves. Single dark (OLED) theme on purpose. */
 :root{
-  --bg:#000; --cap:#16151d; --cap-edge:#2a2836; --fg:#e9e6f2; --muted:#8a859c; --faint:#4a4658;
-  --press:#ffffff; --l0:#8a859c;
-  --font:Roboto, "Google Sans", system-ui, sans-serif; --mono:"Roboto Mono", ui-monospace, monospace;
+  --bg:#000; --cap:#141319; --cap-edge:#2b2937; --fg:#f1eef8; --sub:#c9c3da; --muted:#7f7a93; --faint:#3b3848;
+  --strip:#22202c; --press:#ffffff; --warn:#ffb547;
+  --font:Roboto, "Google Sans", system-ui, sans-serif;
   color-scheme:dark;
 }
 *{box-sizing:border-box;margin:0}
 html,body{height:100%;background:var(--bg);color:var(--fg);font-family:var(--font);overflow:hidden;-webkit-user-select:none;user-select:none}
-#shift{position:fixed;inset:0;display:flex;flex-direction:column;padding:max(10px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));gap:8px;transition:opacity .6s,transform 2s}
-header{display:flex;align-items:center;gap:14px;min-height:44px}
-#layerName{font:700 30px/1 var(--font);letter-spacing:.04em;text-transform:uppercase}
-#chips{display:flex;gap:6px;flex-wrap:wrap}
-.chip{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:5px 8px;border-radius:5px;border:1px solid var(--cap-edge);color:var(--muted)}
-.chip.on{color:#000}
-#status{margin-left:auto;font:500 13px var(--mono);color:var(--muted);text-align:right}
-#status.warn{color:#ffb547}
-#board{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
-svg{width:100%;height:100%}
-.k rect{fill:var(--cap);stroke:var(--cap-edge);stroke-width:.03}
-.k text{font-family:var(--font);text-anchor:middle;dominant-baseline:central;fill:var(--fg);font-weight:600}
-.k .meta{fill:var(--muted);font-weight:500}
-.k.tinted text{fill:#0b0a10}
-.k.tinted .meta{fill:#0b0a10;opacity:.7}
-.k.trans text{fill:var(--faint)}
-.k.pressed rect{fill:var(--press)!important;stroke:var(--press)!important}
+#stage{position:fixed;inset:0;padding:max(4px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(4px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left));transition:opacity .6s,transform 2s}
+svg{width:100%;height:100%;display:block}
+text{font-family:var(--font);text-anchor:middle;dominant-baseline:central}
+.cap{fill:var(--cap);stroke:var(--cap-edge);stroke-width:.035}
+.tap{fill:var(--fg);font-weight:600}
+.sub{fill:var(--sub);font-weight:600}
+.shifted{fill:var(--muted);font-weight:500}
+.strip{fill:var(--strip)}
+.k.empty .cap{fill:#0a0a0e;stroke:#1a1922}
+.k.fall .tap{fill:var(--muted);font-weight:500}
+.k.fall .sub{fill:var(--faint)}
+.k.pressed .cap{fill:var(--press)!important;stroke:var(--press)!important}
 .k.pressed text{fill:#000!important}
-#empty{color:var(--muted);font:500 18px var(--font);text-align:center;max-width:36ch;line-height:1.5}
-body.idle #shift{opacity:.35}
-body.sleep #shift{opacity:.05}
+.k.pressed .strip{fill:#d9d6e3!important}
+#hud .name{font-weight:700;letter-spacing:.04em}
+#hud .how{fill:var(--sub);font-weight:500}
+#hud .also{fill:var(--muted);font-weight:500}
+#hud .status{fill:var(--warn);font-weight:500}
+#empty{position:fixed;inset:0;display:grid;place-items:center;color:var(--muted);font:500 20px var(--font);text-align:center;padding:24px}
+body.idle #stage{opacity:.35}
+body.sleep #stage{opacity:.05}
 </style>
 </head>
 <body>
-<div id="shift">
-  <header>
-    <div id="layerName">—</div>
-    <div id="chips"></div>
-    <div id="status">Connecting…</div>
-  </header>
-  <div id="board"><div id="empty">Waiting for the bridge on this computer…</div></div>
-</div>
+<div id="stage"><div id="empty">Waiting for layerview on the computer…</div></div>
 <script>
 "use strict";
-// Layer colors: index 0 stays neutral; others cycle through distinct hues.
-var HUES = ["#8a859c","#6cb8ff","#ffb547","#57d6b0","#ff8a6b","#c792ff","#ffd84d","#5ee0e6","#ff6fae"];
-function layerColor(i){ return HUES[i % HUES.length]; }
-
-var layout = null, state = null, nodes = [];
-var board = document.getElementById("board");
-
+// Distinct hues for layers; index 0 (base) stays neutral.
+var HUES = ["#8a859c","#5aa9ff","#ffb547","#4fd6a8","#ff7f66","#c08cff","#ffd84d","#53dbe0","#ff6fae","#9bd35a","#f29b58","#8fa2ff"];
+function color(i){ return HUES[i % HUES.length]; }
+function mix(hex, a){ // hex blended over black with alpha a
+  var n = parseInt(hex.slice(1), 16), r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
+  return "rgb(" + Math.round(r * a) + "," + Math.round(g * a) + "," + Math.round(b * a) + ")";
+}
 function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+function pretty(name){ return String(name || "").replace(/_/g, " "); }
 function topLayer(bits){ var t = 0; for (var i = 0; i < 32; i++) if (bits >>> i & 1) t = i; return t; }
 
-function buildBoard(){
-  var ks = layout.keys; if (!ks.length) return;
+var layout = null, state = null, status = { kind: "searching", message: "Connecting…" };
+var nodes = [], hud = null, layerIndex = {}, howTo = {}, bounds = null;
+
+// Which layer (if any) a legend switches to, and how.
+function activator(l){
+  if (!l) return null;
+  if (l.h && layerIndex[l.h] !== undefined) return { layer: layerIndex[l.h], how: "hold", label: l.t || "" };
+  if (l.t && layerIndex[l.t] !== undefined) return { layer: layerIndex[l.t], how: l.h === "toggle" ? "tap" : "hold", label: "" , pure: true };
+  return null;
+}
+
+// Breadth-first from the base layer: describe how each layer is reached.
+function computeHowTo(){
+  howTo = { 0: "" };
+  var queue = [0];
+  while (queue.length) {
+    var m = queue.shift();
+    layout.keys.forEach(function(k){
+      var a = activator(k.legends[m]);
+      if (!a || howTo[a.layer] !== undefined) return;
+      var base = (k.legends[0] && k.legends[0].t) || "";
+      var keyName = a.pure ? (m === 0 ? base : (base || "?")) : a.label;
+      if (a.pure && m === 0) keyName = base || pretty(layout.layers[a.layer]);
+      var step = a.how + " " + keyName;
+      howTo[a.layer] = howTo[m] ? howTo[m] + "  →  " + step : step;
+      queue.push(a.layer);
+    });
+  }
+}
+
+function build(){
+  var stage = document.getElementById("stage");
+  if (!layout || !layout.keys.length) return;
+  layerIndex = {}; layout.layers.forEach(function(n, i){ layerIndex[n] = i; });
+  computeHowTo();
   var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
-  ks.forEach(function(k){
-    // generous bounds so rotated keys never clip
-    var pad = Math.max(k.w, k.h) * 0.25;
-    minX = Math.min(minX, k.x - pad); minY = Math.min(minY, k.y - pad);
-    maxX = Math.max(maxX, k.x + k.w + pad); maxY = Math.max(maxY, k.y + k.h + pad);
+  layout.keys.forEach(function(k){
+    var p = Math.max(k.w, k.h) * 0.22;
+    minX = Math.min(minX, k.x - p); minY = Math.min(minY, k.y - p);
+    maxX = Math.max(maxX, k.x + k.w + p); maxY = Math.max(maxY, k.y + k.h + p);
   });
+  bounds = { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
   var s = '<svg viewBox="' + minX + ' ' + minY + ' ' + (maxX - minX) + ' ' + (maxY - minY) + '" preserveAspectRatio="xMidYMid meet">';
-  ks.forEach(function(k, i){
-    var cx = k.x + k.w / 2, cy = k.y + k.h / 2, g = 0.06;
-    s += '<g class="k" data-i="' + i + '" transform="translate(' + cx + ' ' + cy + ') rotate(' + (k.r || 0) + ')">'
-      + '<rect x="' + (-k.w / 2 + g) + '" y="' + (-k.h / 2 + g) + '" width="' + (k.w - 2 * g) + '" height="' + (k.h - 2 * g) + '" rx="0.12"/>'
-      + '<text class="main" y="0"></text><text class="meta top" y="' + (-k.h / 2 + 0.2) + '" font-size="0.17"></text>'
-      + '<text class="meta bot" y="' + (k.h / 2 - 0.2) + '" font-size="0.17"></text></g>';
+  layout.keys.forEach(function(k, i){
+    var cx = k.x + k.w / 2, cy = k.y + k.h / 2, g = 0.05, w = k.w - 2 * g, h = k.h - 2 * g;
+    s += '<g class="k" transform="translate(' + cx + ' ' + cy + ') rotate(' + (k.r || 0) + ')">'
+      + '<rect class="cap" x="' + (-w / 2) + '" y="' + (-h / 2) + '" width="' + w + '" height="' + h + '" rx="0.11"/>'
+      + '<rect class="strip" x="' + (-w / 2 + 0.06) + '" y="' + (h / 2 - 0.33) + '" width="' + (w - 0.12) + '" height="0.27" rx="0.06"/>'
+      + '<text class="shifted" x="' + (-w / 2 + 0.2) + '" y="' + (-h / 2 + 0.2) + '" font-size="0.2"></text>'
+      + '<text class="tap"></text>'
+      + '<text class="sub" y="' + (h / 2 - 0.195) + '" font-size="0.2"></text></g>';
   });
-  board.innerHTML = s + '</svg>';
-  nodes = Array.prototype.slice.call(board.querySelectorAll(".k")).map(function(g){
-    return { g: g, rect: g.querySelector("rect"), main: g.querySelector(".main"), top: g.querySelector(".top"), bot: g.querySelector(".bot") };
+  // HUD in the gap between the halves, above the thumb clusters.
+  var gx = (minX + maxX) / 2;
+  s += '<g id="hud"><text class="name" x="' + gx + '" y="' + (minY + 1.35) + '" font-size="0.78"></text>'
+     + '<text class="how" x="' + gx + '" y="' + (minY + 2.15) + '" font-size="0.3"></text>'
+     + '<text class="also" x="' + gx + '" y="' + (minY + 2.65) + '" font-size="0.24"></text>'
+     + '<text class="status" x="' + gx + '" y="' + (minY + 3.2) + '" font-size="0.26"></text></g>';
+  stage.innerHTML = s + "</svg>";
+  nodes = Array.prototype.map.call(stage.querySelectorAll(".k"), function(g){
+    return { g: g, cap: g.querySelector(".cap"), strip: g.querySelector(".strip"), shifted: g.querySelector(".shifted"),
+             tap: g.querySelector(".tap"), sub: g.querySelector(".sub") };
   });
+  var h = stage.querySelector("#hud");
+  hud = { name: h.querySelector(".name"), how: h.querySelector(".how"), also: h.querySelector(".also"), status: h.querySelector(".status") };
+  render();
+}
+
+function fit(text, max){ // font size for the main legend
+  var n = text.length;
+  return n <= 1 ? max : n <= 2 ? max * 0.86 : n <= 4 ? max * 0.62 : n <= 6 ? max * 0.48 : max * 0.38;
 }
 
 function render(){
-  if (!layout || !state || !nodes.length) return;
-  var top = topLayer(state.layers);
-  var name = layout.layers[top] || ("Layer " + top);
-  var el = document.getElementById("layerName");
-  el.textContent = name; el.style.color = layerColor(top);
-  var chips = "";
-  layout.layers.forEach(function(n, i){
-    var on = state.layers >>> i & 1;
-    chips += '<span class="chip' + (on ? ' on' : '') + '"' + (on ? ' style="background:' + layerColor(i) + ';border-color:' + layerColor(i) + '"' : '') + '>' + esc(n || i) + '</span>';
-  });
-  document.getElementById("chips").innerHTML = chips;
-  var pressed = {}; state.pressed.forEach(function(i){ pressed[i] = 1; });
+  if (!layout || !nodes.length) return;
+  var st = state || { layers: 1, pressed: [], effective: [], shift: false };
+  var top = topLayer(st.layers);
+  var pressed = {}; (st.pressed || []).forEach(function(i){ pressed[i] = 1; });
+
   layout.keys.forEach(function(k, i){
-    var n = nodes[i]; if (!n) return;
-    var eff = state.effective[i] || 0;
-    var lk = k.legends[eff] || k.legends[0] || null;
-    var main = "", topT = "", botT = "";
-    if (lk) {
-      main = state.shift && lk.s ? lk.s : (lk.t || "");
-      topT = !state.shift && lk.s ? lk.s : "";
-      botT = lk.h || "";
+    var n = nodes[i];
+    var eff = (st.effective && st.effective[i]) || 0;
+    var l = k.legends[eff] || {};
+    var tap = st.shift && l.s ? l.s : (l.t || "");
+    if (tap === "▽") tap = "";
+    var act = activator(l);
+    var sub = l.h || "";
+    var isFall = eff < top && top > 0;       // falls through from a lower layer
+    var empty = !tap && !sub;
+
+    n.tap.textContent = tap;
+    n.tap.setAttribute("font-size", fit(tap, sub ? 0.46 : 0.5));
+    n.tap.setAttribute("y", sub ? -0.1 : 0);
+    n.shifted.textContent = (!st.shift && l.s && l.s !== tap) ? l.s : "";
+    if (act && act.pure) { tap = pretty(layout.layers[act.layer]); n.tap.textContent = tap; n.tap.setAttribute("font-size", fit(tap, 0.5)); n.tap.setAttribute("y", 0); }
+    n.sub.textContent = act && !act.pure ? pretty(layout.layers[act.layer]) : (act ? "" : sub);
+    n.sub.setAttribute("font-size", (n.sub.textContent.length > 8) ? 0.16 : 0.2);
+    n.strip.style.display = n.sub.textContent ? "" : "none";
+
+    // Colors: layer-entry keys show their target layer's color; active-layer keys a dark tint.
+    var capFill = "", capStroke = "", stripFill = "", subFill = "";
+    if (act && act.pure) {
+      capFill = mix(color(act.layer), 0.32); capStroke = color(act.layer);
+      stripFill = color(act.layer); subFill = "#0b0a10";
+    } else if (act) {
+      stripFill = color(act.layer); subFill = "#0b0a10";
     }
-    if (main === "▽") main = "";
-    var len = main.length;
-    n.main.setAttribute("font-size", len > 6 ? 0.2 : len > 4 ? 0.24 : len > 2 ? 0.3 : 0.4);
-    n.main.textContent = main; n.top.textContent = topT; n.bot.textContent = botT;
-    var tinted = eff > 0;
-    n.g.classList.toggle("tinted", tinted);
+    if (eff > 0 && !(act && act.pure)) { capFill = mix(color(eff), 0.26); capStroke = mix(color(eff), 0.7); }
+    n.cap.style.fill = capFill; n.cap.style.stroke = capStroke;
+    n.strip.style.fill = stripFill; n.sub.style.fill = subFill;
+    n.g.classList.toggle("empty", empty && !act);
+    n.g.classList.toggle("fall", isFall && !act);
     n.g.classList.toggle("pressed", !!pressed[i]);
-    n.rect.style.fill = tinted ? layerColor(eff) : "";
-    n.rect.style.stroke = tinted ? layerColor(eff) : "";
   });
+
+  // HUD: current layer, how to get there, other active layers, problems.
+  hud.name.textContent = pretty(layout.layers[top] || ("Layer " + top));
+  hud.name.style.fill = color(top);
+  hud.name.setAttribute("font-size", top ? 0.78 : 0.42);       // quiet on the base layer
+  hud.name.style.opacity = top ? 1 : 0.55;
+  hud.how.textContent = top ? (howTo[top] || "") : "";
+  var others = [];
+  layout.layers.forEach(function(n, i){ if (i && i !== top && (st.layers >>> i & 1)) others.push(pretty(n)); });
+  hud.also.textContent = others.length ? "also on: " + others.join(", ") : "";
+  hud.status.textContent = status.kind === "live" ? "" : status.message;
 }
 
-function setStatus(st){
-  var el = document.getElementById("status");
-  el.textContent = st.message;
-  el.className = st.kind === "live" ? "" : "warn";
-  if (st.kind !== "connected" && !layout) document.getElementById("board").innerHTML = '<div id="empty">' + esc(st.message) + '</div>';
+function setStatus(s){
+  status = s;
+  if (!layout) {
+    document.getElementById("stage").innerHTML = '<div id="empty">' + esc(s.message) + '</div>';
+  } else render();
 }
 
 // --- idle dimming + pixel shift (OLED burn-in care) ---
@@ -134,16 +197,21 @@ setInterval(function(){
 }, 2000);
 setInterval(function(){
   var dx = Math.round(Math.random() * 6 - 3), dy = Math.round(Math.random() * 6 - 3);
-  document.getElementById("shift").style.transform = "translate(" + dx + "px," + dy + "px)";
+  document.getElementById("stage").style.transform = "translate(" + dx + "px," + dy + "px)";
 }, 180000);
 
 // --- live stream ---
-var es = new EventSource("events");
+var es = new EventSource("events"), pageId = null;
+es.addEventListener("hello", function(e){
+  var id = JSON.parse(e.data).page;
+  if (pageId && id !== pageId) location.reload();   // bridge now serves a newer page
+  pageId = id;
+});
 es.addEventListener("status", function(e){ setStatus(JSON.parse(e.data)); });
-es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); buildBoard(); render(); });
+es.addEventListener("layout", function(e){ layout = JSON.parse(e.data); build(); });
 es.addEventListener("state", function(e){
   var prev = state; state = JSON.parse(e.data);
-  if (!prev || prev.layers !== state.layers || state.pressed.length) activity();
+  if (!prev || prev.layers !== state.layers || (state.pressed && state.pressed.length)) activity();
   render();
 });
 es.onerror = function(){ setStatus({ kind: "error", message: "Bridge not reachable, retrying…" }); };
